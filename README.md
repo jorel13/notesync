@@ -1,0 +1,100 @@
+# notesync
+
+Self-hosted sync for Obsidian vaults: a small Rust server you run yourself, and an
+Obsidian plugin for desktop and mobile.
+
+> **Status: early development.** The server core works and is tested; the plugin hasn't
+> been started. Don't trust it with your only copy of a vault yet.
+
+- Multiple users per server, each with any number of private vaults
+- Accounts are created by an admin; devices sign in with their own revocable tokens
+- Edits to different notes never conflict; overlapping edits are merged or kept as
+  conflict copies, never silently dropped
+- Old versions and deleted files are kept for a configurable period
+
+See [docs/design.md](docs/design.md) for the full design.
+
+## Repository layout
+
+| Folder | Contents |
+|---|---|
+| `server/` | Rust server: HTTP API, SQLite database, file storage, admin commands |
+| `plugin/` | Obsidian plugin (not started yet) |
+| `docs/` | Design notes |
+| `deploy/` | Example Docker Compose file and settings |
+
+## Server
+
+### Run it locally
+
+Requires a recent stable Rust toolchain.
+
+```bash
+cd server
+cargo run -- user add alice --admin   # prompts for a password
+cargo run -- serve                    # listens on http://127.0.0.1:8080
+```
+
+Check it's up at `http://127.0.0.1:8080/api/v1/health`.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `notesync-server serve` | Run the server |
+| `notesync-server user add <name> [--admin]` | Create a user |
+| `notesync-server user passwd <name>` | Set a new password and sign the user out everywhere |
+| `notesync-server user disable <name>` / `enable <name>` | Block or unblock a user |
+| `notesync-server user make-admin <name>` | Give a user admin rights |
+| `notesync-server user list` | List users |
+| `notesync-server vault list --user <name>` | List a user's vaults |
+| `notesync-server gc` | Remove expired file versions and deleted vaults now |
+
+Commands that take a password prompt for it; add `--password-stdin` to read it from
+standard input instead.
+
+### Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `NOTESYNC_BIND_ADDR` | `127.0.0.1:8080` | Listen address |
+| `NOTESYNC_DATA_DIR` | `./data` | Database and stored files |
+| `NOTESYNC_MAX_FILE_MB` | `100` | Largest file accepted |
+| `NOTESYNC_HISTORY_DAYS` | `30` | How long old versions and deleted vaults are kept |
+| `NOTESYNC_LOG` | `info` | Log level (`error`, `warn`, `info`, `debug`) |
+
+### Tests
+
+```bash
+cd server
+cargo test
+```
+
+Unit tests cover path rules, password and token handling, rate limiting and file storage.
+The API tests in `server/tests/` run the whole server in-process against a temporary
+database: accounts, isolation between users, uploads, commits and conflicts, change feeds,
+history and cleanup.
+
+## Deployment
+
+The server speaks plain HTTP. **Don't expose it directly to a network**: put it behind
+something that provides HTTPS and access control, such as
+[Tailscale Serve or Services](https://tailscale.com/docs/features/tailscale-services) or a
+reverse proxy like Caddy.
+
+```bash
+docker build -t notesync-server server
+```
+
+Then adapt [deploy/compose.example.yaml](deploy/compose.example.yaml), and create the first
+user inside the container:
+
+```bash
+docker exec -it <container> notesync-server user add alice --admin
+```
+
+Back up the data folder (`notesync.db` and `blobs/`) like any other database.
+
+## License
+
+[MIT](LICENSE)

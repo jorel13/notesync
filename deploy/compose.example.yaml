@@ -1,0 +1,18 @@
+# Example deployment. Copy to compose.local.yaml (ignored by git) and fill in your values.
+#
+# The server speaks plain HTTP and should not be exposed directly to a network.
+# Put it behind something that provides HTTPS, such as Tailscale Serve/Services
+# or a reverse proxy like Caddy. Binding to 127.0.0.1 keeps it off your LAN.
+services:
+  notesync:
+    image: notesync-server:latest # build with: docker build -t notesync-server server
+    user: "${NOTESYNC_UID:-568}:${NOTESYNC_GID:-568}"
+    environment:
+      - NOTESYNC_MAX_FILE_MB=${NOTESYNC_MAX_FILE_MB:-100}
+      - NOTESYNC_HISTORY_DAYS=${NOTESYNC_HISTORY_DAYS:-30}
+      - NOTESYNC_LOG=${NOTESYNC_LOG:-info}
+    ports:
+      - "127.0.0.1:${NOTESYNC_PORT:-30080}:8080"
+    volumes:
+      - ${NOTESYNC_DATA_PATH:?set NOTESYNC_DATA_PATH to a folder for the database and files}:/data
+    restart: unless-stopped

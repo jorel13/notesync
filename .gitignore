@@ -1,0 +1,20 @@
+# Server
+server/target/
+server/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Plugin
+plugin/node_modules/
+plugin/main.js
+
+# Local configuration and secrets
+.env
+deploy/*.local.yaml
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
