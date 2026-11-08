@@ -1,0 +1,9 @@
+{
+  "id": "notesync",
+  "name": "notesync",
+  "version": "0.1.0",
+  "minAppVersion": "1.11.4",
+  "description": "Sync your vault with your own self-hosted notesync server.",
+  "author": "notesync contributors",
+  "isDesktopOnly": false
+}

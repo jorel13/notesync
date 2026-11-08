@@ -5,7 +5,10 @@
 # or a reverse proxy like Caddy. Binding to 127.0.0.1 keeps it off your LAN.
 services:
   notesync:
-    image: notesync-server:latest # build with: docker build -t notesync-server server
+    # Published by the release workflow. Replace <owner> with the GitHub account
+    # that hosts the repository, and pin a version rather than using "latest".
+    # To build it yourself instead: docker build -t notesync-server server
+    image: ghcr.io/<owner>/notesync-server:0.1.0
     user: "${NOTESYNC_UID:-568}:${NOTESYNC_GID:-568}"
     environment:
       - NOTESYNC_MAX_FILE_MB=${NOTESYNC_MAX_FILE_MB:-100}

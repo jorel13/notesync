@@ -3,8 +3,9 @@
 Self-hosted sync for Obsidian vaults: a small Rust server you run yourself, and an
 Obsidian plugin for desktop and mobile.
 
-> **Status: early development.** The server core works and is tested; the plugin hasn't
-> been started. Don't trust it with your only copy of a vault yet.
+> **Status: early development (0.1.0).** The server and plugin are complete for v1 and
+> covered by automated tests, but haven't had much real-world use yet. Keep a backup of
+> your vault.
 
 - Multiple users per server, each with any number of private vaults
 - Accounts are created by an admin; devices sign in with their own revocable tokens
@@ -19,8 +20,8 @@ See [docs/design.md](docs/design.md) for the full design.
 | Folder | Contents |
 |---|---|
 | `server/` | Rust server: HTTP API, SQLite database, file storage, admin commands |
-| `plugin/` | Obsidian plugin (not started yet) |
-| `docs/` | Design notes |
+| `plugin/` | Obsidian plugin for desktop and mobile ([details](plugin/README.md)) |
+| `docs/` | [Design](docs/design.md) and [deployment guide](docs/deployment.md) |
 | `deploy/` | Example Docker Compose file and settings |
 
 ## Server
@@ -82,6 +83,9 @@ something that provides HTTPS and access control, such as
 [Tailscale Serve or Services](https://tailscale.com/docs/features/tailscale-services) or a
 reverse proxy like Caddy.
 
+Releases publish the image as `ghcr.io/<owner>/notesync-server:<version>`, or build it
+yourself:
+
 ```bash
 docker build -t notesync-server server
 ```
@@ -94,6 +98,9 @@ docker exec -it <container> notesync-server user add alice --admin
 ```
 
 Back up the data folder (`notesync.db` and `blobs/`) like any other database.
+
+[docs/deployment.md](docs/deployment.md) covers the whole setup, including TrueNAS,
+HTTPS, installing the plugin on each device and updating.
 
 ## License
 

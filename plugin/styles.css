@@ -1,0 +1,21 @@
+/* Spin the ribbon icon while a sync runs. */
+.notesync-syncing svg {
+  animation: notesync-spin 1.2s linear infinite;
+}
+
+.notesync-error {
+  color: var(--text-error);
+}
+
+@keyframes notesync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notesync-syncing svg {
+    animation: none;
+    opacity: 0.5;
+  }
+}

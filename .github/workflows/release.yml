@@ -1,0 +1,83 @@
+# Publishes a release when a version tag like 0.1.0 is pushed:
+# - the plugin files (main.js, manifest.json, styles.css) as release assets,
+#   which is what Obsidian and BRAT install from
+# - the server image to GitHub Container Registry as
+#   ghcr.io/<owner>/notesync-server:<version> and :latest
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  check-versions:
+    name: Check version numbers match the tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare tag with manifest.json, package.json and Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          manifest=$(jq -r .version plugin/manifest.json)
+          package=$(jq -r .version plugin/package.json)
+          cargo=$(grep -m1 '^version' server/Cargo.toml | cut -d '"' -f2)
+          echo "tag=$tag manifest=$manifest package=$package cargo=$cargo"
+          test "$tag" = "$manifest" && test "$tag" = "$package" && test "$tag" = "$cargo"
+          jq -e --arg v "$tag" 'has($v)' plugin/versions.json
+
+  plugin:
+    name: Build and publish the plugin
+    needs: check-versions
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugin/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            plugin/main.js
+            plugin/manifest.json
+            plugin/styles.css
+
+  server-image:
+    name: Build and publish the server image
+    needs: check-versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/notesync-server
+          tags: |
+            type=raw,value=${{ github.ref_name }}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: server
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

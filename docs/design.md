@@ -218,7 +218,7 @@ POST /vaults/7/commit
 ### Settings
 - **Server URL**, e.g. `https://notes.<tailnet>.ts.net`.
 - **Sign in:** username and password are sent once to get a device token, and **the password is never saved**.
-- **Token storage:** saved in the plugin's own data inside `.obsidian/`, which isn't synced. Before building this, check whether Obsidian's current API offers secret storage, and use it if so.
+- **Token storage:** kept in Obsidian's secret storage (`app.secretStorage`, Obsidian 1.11.4+), never in the plugin's data file.
 - **Remote vault:** pick an existing vault or create one.
 - **Sync triggers:** on startup (on by default), after edits (wait 10 seconds after the last change), every N minutes (default 5) and manually.
 - **Excluded paths:** `.obsidian/`, `.trash/` and `.git/` are always excluded. Users can add patterns.

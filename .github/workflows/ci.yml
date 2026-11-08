@@ -23,6 +23,36 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
+  plugin:
+    name: Plugin checks and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The end-to-end tests run against a real server build.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - run: cargo build --locked
+        working-directory: server
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugin/package-lock.json
+      - run: npm ci
+        working-directory: plugin
+      - run: npm run typecheck
+        working-directory: plugin
+      - run: npm run lint
+        working-directory: plugin
+      - run: npm test
+        working-directory: plugin
+        env:
+          NOTESYNC_E2E: "1"
+      - run: npm run build
+        working-directory: plugin
+
   server-image:
     name: Server Docker image builds
     runs-on: ubuntu-latest
