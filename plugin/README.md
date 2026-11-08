@@ -66,7 +66,8 @@ The end-to-end tests in `tests/e2e.test.ts` start the real server, so build it f
 
 ## Releasing
 
-Set the same version in `manifest.json`, `package.json`, `versions.json` and
-`../server/Cargo.toml`, then push a tag with that version (for example `0.1.1`). The release
+Every change gets a new version, so a device's Settings > notesync > Status shows whether it
+has the fix. Set the same version in `manifest.json`, `package.json`, `versions.json` and
+`../server/Cargo.toml`, add an entry to `../CHANGELOG.md`, then push a tag with that version (for example `0.1.1`). The release
 workflow checks the numbers match, attaches the plugin files to a GitHub release and
 publishes the server image.

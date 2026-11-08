@@ -191,6 +191,20 @@ describe("renames", () => {
     await syncAll(pc, phone);
     expect(phone.fs.paths()).toEqual(["Note.md"]);
   });
+
+  it("renames that only change letter case on a case-insensitive device", async () => {
+    phone.fs.caseInsensitive = true;
+    pc.fs.setText("note.md", "text");
+    await syncAll(pc, phone);
+    pc.fs.move("note.md", "Note.md");
+    await pc.engine.sync();
+
+    const report = await phone.engine.sync();
+    expect(report.renamedLocally).toEqual([{ from: "note.md", to: "Note.md" }]);
+    expect(phone.fs.paths()).toEqual(["Note.md"]);
+    // The device moves past the change instead of retrying it forever.
+    expect(phone.store.saved?.lastSeq).toBe((await server.state()).head_seq);
+  });
 });
 
 describe("what gets synced", () => {

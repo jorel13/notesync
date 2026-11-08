@@ -294,6 +294,8 @@ export class NotesyncSettingTab extends PluginSettingTab {
     new Setting(el).setName("Status").setHeading();
     const status = new Setting(el)
       .setName(statusText(this.plugin.controller.currentStatus))
+      // Shows which build Obsidian actually loaded, to confirm an update took.
+      .setDesc(`Plugin version ${this.plugin.manifest.version}`)
       .addButton((button) =>
         button.setButtonText("Sync now").onClick(() => void this.plugin.controller.run("manual")),
       );

@@ -67,6 +67,11 @@ export class ObsidianVaultFs implements VaultFs {
     await this.ensureParentFolder(to);
     // vault.rename, not fileManager.renameFile: the device that renamed the
     // file already updated links, and those edits arrive as their own changes.
+    if (from !== to && from.toLowerCase() === to.toLowerCase()) {
+      // A case-only rename goes through a temporary name, so it works the same
+      // on file systems that ignore letter case.
+      await this.vault.rename(file, `${to}.notesync-rename`);
+    }
     await this.vault.rename(file, to);
   }
 

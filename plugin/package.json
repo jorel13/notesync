@@ -1,6 +1,6 @@
 {
   "name": "notesync-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Obsidian plugin for syncing vaults with a self-hosted notesync server",
   "private": true,
   "license": "MIT",

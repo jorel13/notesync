@@ -73,8 +73,18 @@ export class MemoryFs implements VaultFs {
     return [...this.files].map(([path, f]) => ({ path, size: f.data.length, mtime: f.mtime }));
   }
 
+  /** Acts like Windows: names that differ only by letter case are the same file. */
+  caseInsensitive = false;
+
+  private onDisk(path: string): string | undefined {
+    if (this.files.has(path)) return path;
+    if (!this.caseInsensitive) return undefined;
+    return [...this.files.keys()].find((p) => pathKey(p) === pathKey(path));
+  }
+
   async stat(path: string): Promise<FileStat | null> {
-    const file = this.files.get(path);
+    const actual = this.onDisk(path);
+    const file = actual === undefined ? undefined : this.files.get(actual);
     return file ? { path, size: file.data.length, mtime: file.mtime } : null;
   }
 
@@ -94,7 +104,8 @@ export class MemoryFs implements VaultFs {
   }
 
   async rename(from: string, to: string): Promise<void> {
-    if (this.files.has(to)) throw new Error(`already exists: ${to}`);
+    const existing = this.onDisk(to);
+    if (existing !== undefined && existing !== from) throw new Error(`already exists: ${to}`);
     this.move(from, to);
     this.renames.push({ from, to });
   }

@@ -193,20 +193,87 @@ POST /vaults/7/commit
 - **Size limits:** request bodies are capped (file limit plus some headroom).
 - **Logs** never include tokens, passwords or note contents.
 
+### Server modules
+
+```mermaid
+flowchart LR
+  REQ["HTTPS request<br/>(via Tailscale or proxy)"] --> ROUTER["api/mod.rs<br/>routes, body size limit"]
+  ROUTER --> EXTRACT["api/extract.rs<br/>JSON errors for bad input"]
+  ROUTER --> AUTH["auth.rs<br/>token check, login,<br/>rate limit"]
+  ROUTER --> ACCOUNT["api/account.rs<br/>sign in, devices, vaults"]
+  ROUTER --> FILES["api/files.rs<br/>state, changes, upload,<br/>download, commit"]
+  FILES --> PATHS["paths.rs<br/>path rules"]
+  FILES --> SYNC["sync.rs<br/>commits, change feed,<br/>history"]
+  FILES --> STORAGE["storage.rs<br/>contents by SHA-256"]
+  ACCOUNT --> USERS["users.rs"]
+  AUTH --> DB
+  SYNC --> DB[("notesync.db<br/>SQLite, WAL")]
+  USERS --> DB
+  STORAGE --> BLOBS[("blobs/<br/>one file per content")]
+  CLI["main.rs<br/>serve, user, vault, gc"] --> USERS
+  CLI --> GC["gc.rs<br/>daily cleanup"]
+  GC --> DB
+  GC --> BLOBS
+```
+
 ### Cleanup and history
 - File contents stay available for `NOTESYNC_HISTORY_DAYS` after a newer version or a delete replaces them. This allows "restore an old version" and recovery from a bad sync.
-- `gc` removes stored contents that no current file uses and that are older than the history period. In v1, `changes` rows are kept forever (they're small); the history endpoint marks versions whose contents were removed as unavailable.
+- `gc` removes stored contents that no current file uses and that are older than the history period, uploads that were never committed, and vaults deleted more than the history period ago. It runs once a day while the server is running, and on demand with `notesync-server gc`.
+- In v1, `changes` rows are kept forever (they're small); the history endpoint marks versions whose contents were removed as unavailable.
+- SQLite doesn't shrink its file after deletes; it reuses the free space. At notesync's database sizes that doesn't matter, so the server doesn't run `VACUUM`.
 
 ## Plugin
 
 ### Structure
-- **`engine/`:** the sync logic, in plain TypeScript with **no Obsidian imports**. It talks to two small interfaces:
+
+```mermaid
+flowchart TB
+  subgraph Obsidian["Obsidian app"]
+    VAULT[("Vault files")]
+    SECRET[("Secret storage<br/>device token")]
+    EVENTS["Vault events,<br/>app focus, timer"]
+  end
+
+  subgraph Glue["src/obsidian/ and main.ts (uses Obsidian APIs)"]
+    MAIN["main.ts<br/>plugin entry: commands,<br/>ribbon, status bar"]
+    TAB["settings-tab.ts<br/>sign in, choose vault,<br/>sync options"]
+    VFS["vault-fs.ts<br/>ObsidianVaultFs"]
+    STORE["state-store.ts<br/>sync-state.json"]
+    TRANS["transport.ts<br/>requestUrl"]
+    MODAL["modals.ts<br/>confirm, last-sync report"]
+  end
+
+  subgraph Core["No Obsidian imports (unit-tested)"]
+    CTRL["sync/controller.ts<br/>when to sync, status,<br/>error messages"]
+    TRACK["sync/tracking-fs.ts<br/>ignores the sync's<br/>own file events"]
+    ENG["engine/engine.ts<br/>pull, plan, merge, push"]
+    MERGE["engine/merge.ts<br/>three-way text merge"]
+    PATHS["engine/paths.ts<br/>exclusions, conflict<br/>copy names"]
+    API["api/http.ts<br/>ServerApi client"]
+  end
+
+  EVENTS --> MAIN
+  MAIN --> CTRL
+  TAB --> MAIN
+  SECRET --> MAIN
+  CTRL --> ENG
+  CTRL --> MODAL
+  ENG --> MERGE
+  ENG --> PATHS
+  ENG --> TRACK --> VFS --> VAULT
+  ENG --> STORE
+  ENG --> API --> TRANS --> SERVER["notesync server"]
+```
+
+- **`engine/`:** the sync logic, in plain TypeScript with **no Obsidian imports**. It talks to three small interfaces (`engine/types.ts`):
   - `VaultFs`: list, read, write, trash, rename and stat files.
   - `ServerApi`: the HTTP calls above.
+  - `StateStore`: loads and saves the device's sync record.
 
-  Tests use in-memory versions of both. The real plugin uses Obsidian's file APIs and `requestUrl`.
-- **`obsidian/`:** the Obsidian-specific glue: plugin entry point, settings screen, commands, ribbon icon, status display and event hooks.
-- **`merge/`:** three-way merge for text, using a small library such as `node-diff3`.
+  Tests use in-memory versions of all three. The real plugin uses Obsidian's file APIs, `requestUrl` and a JSON file in the plugin folder.
+- **`engine/merge.ts`:** line-based three-way merge for text.
+- **`sync/`:** the controller decides when to sync (startup, after edits, timer, returning to the app, manual), keeps the status and turns errors into messages. `TrackingFs` records which files the sync itself changed, so those file events don't start another sync.
+- **`obsidian/` and `main.ts`:** the Obsidian-specific glue: plugin entry point, settings screen, commands, ribbon icon, status display, dialogs and event hooks.
 
 ### Platform rules (Windows and Android)
 - `manifest.json` sets `"isDesktopOnly": false`.

@@ -3,7 +3,7 @@
 Self-hosted sync for Obsidian vaults: a small Rust server you run yourself, and an
 Obsidian plugin for desktop and mobile.
 
-> **Status: early development (0.1.0).** The server and plugin are complete for v1 and
+> **Status: early development (0.1.1, see the [changelog](CHANGELOG.md)).** The server and plugin are complete for v1 and
 > covered by automated tests, but haven't had much real-world use yet. Keep a backup of
 > your vault.
 

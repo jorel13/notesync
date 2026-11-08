@@ -371,7 +371,10 @@ export class SyncEngine {
 
       case "rename": {
         if (!(await this.unchangedSinceScan(action.from, scan))) return false;
-        if (await this.fs.stat(action.to)) return false;
+        // On Windows and most phones, a rename that only changes letter case
+        // finds the file itself at the new name; that isn't a clash.
+        const caseOnly = pathKey(action.from) === pathKey(action.to);
+        if (!caseOnly && (await this.fs.stat(action.to))) return false;
         await this.fs.rename(action.from, action.to);
         delete state.files[action.from];
         await this.record(state, action.to, action.hash, action.seq, action.hash);
