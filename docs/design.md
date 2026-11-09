@@ -55,10 +55,10 @@ flowchart LR
 - **Other:** `serde` / `serde_json`, `clap` (command line), `tracing` (logs).
 - **Shape:** a single binary with subcommands:
   - `notesync-server serve` runs the server.
-  - `notesync-server user add|passwd|disable|enable|list|make-admin` manages accounts.
+  - `notesync-server user add|passwd|disable|enable|list|make-admin|unlock|delete` manages accounts.
   - `notesync-server vault list --user <name>` lists a user's vaults.
   - `notesync-server gc` cleans up old data (also runs daily on its own).
-- **Admin web page** at `/admin`, for admin accounts: plain HTML, CSS and JavaScript compiled into the binary, no build step and no outside scripts.
+- **Admin web page** at `/admin` on its own port, for admin accounts: plain HTML, CSS and JavaScript compiled into the binary, no build step and no outside scripts.
 
 ### Configuration (environment variables)
 
@@ -69,7 +69,8 @@ flowchart LR
 | `NOTESYNC_MAX_FILE_MB` | `100` | Largest file accepted |
 | `NOTESYNC_HISTORY_DAYS` | `30` | How long old versions and deleted files are kept |
 | `NOTESYNC_TOKEN_DAYS` | `30` | Device sign-in lifetime without syncing |
-| `NOTESYNC_ADMIN_PAGE` | `on` | Serve the admin web page at `/admin` |
+| `NOTESYNC_ADMIN_BIND_ADDR` | `127.0.0.1:8081` | Listen address for the admin page (a different port from the sync API) |
+| `NOTESYNC_ADMIN_PAGE` | `on` | Serve the admin page |
 | `NOTESYNC_LOG` | `info` | Log level |
 
 Rate limits have their own variables; the [README](../README.md#configuration) lists them all.
@@ -160,7 +161,7 @@ Every request except login and health checks needs `Authorization: Bearer <token
 | `POST /vaults/{id}/commit` | Apply a batch of changes all at once or not at all (below) |
 | `GET /vaults/{id}/history?path=...` | Past versions of one file |
 
-**Admin API** (`/api/v1/admin`, used by the admin page). It uses a session cookie instead of a device token, and every request must send the `X-Notesync-Admin` header (see Security).
+**Admin API** (`/api/v1/admin`, used by the admin page). It's served only on the admin address (`NOTESYNC_ADMIN_BIND_ADDR`), together with the page; the sync address returns 404 for it. It uses a session cookie instead of a device token, and every request must send the `X-Notesync-Admin` header (see Security).
 
 | Method and path | Purpose |
 |---|---|
@@ -172,6 +173,7 @@ Every request except login and health checks needs `Authorization: Bearer <token
 | `GET /admin/users` | All users, with devices and lockouts |
 | `POST /admin/users` | `{username, password, is_admin}`; adding an admin needs `admin_password` |
 | `GET /admin/users/{name}` | A user with their devices, vaults and deleted vaults |
+| `DELETE /admin/users/{name}` | `{admin_password}`; deletes the user, their vaults and stored files |
 | `PUT /admin/users/{name}/password` | `{new_password, admin_password}`; signs the user out everywhere |
 | `PUT /admin/users/{name}/disabled` | `{disabled}` |
 | `PUT /admin/users/{name}/admin` | `{is_admin, admin_password}` |
@@ -217,14 +219,15 @@ POST /vaults/7/commit
 - **Tokens:** random 256-bit device tokens, stored only as SHA-256 hashes. Each expires `NOTESYNC_TOKEN_DAYS` (30) after it was issued. The plugin swaps its token for a new one about once a day (`refresh_after`), so a copied token stops working soon after and an idle device is signed out after 30 days. After a swap, the previous token works for 10 more minutes, in case the device never received the reply. Tokens can be revoked per device; disabling a user or resetting their password revokes all of them.
 - **Sensitive actions need the password, not just a token:** changing the password and deleting a vault. A changed password signs out the other devices by default.
 - **Admin page:**
+  - Served on its own address, never on the sync address, so a deployment can publish it to admins only (for example a separate Tailscale Service with a grant for one person). People who only sync can't reach the sign-in at all.
   - Only accounts with admin rights can sign in, with the same lockout and rate limits as devices.
   - A sign-in is a separate session (`admin_sessions`, token stored as a SHA-256 hash) in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/v1/admin`. Scripts on the page can't read it.
   - Sessions end after 30 minutes without activity or 12 hours after signing in. They also end when the admin's password changes or the account is disabled or loses admin rights.
   - Every admin request must carry the `X-Notesync-Admin` header. Another website can't add a custom header to a request here without the browser asking the server first (CORS), and the server never allows it. So a link or form elsewhere can't act as a signed-in admin.
   - The page is served with a strict Content Security Policy: only its own script and styles, nothing inline, no framing.
-  - Setting another user's password and granting or removing admin rights need the admin's own password again. An admin can't disable themselves or remove their own admin rights.
+  - Deleting a user, setting another user's password and granting or removing admin rights need the admin's own password again. An admin can't disable, delete or demote themselves, and the only admin can't be deleted.
   - Every admin action is logged with the admin's name.
-  - `NOTESYNC_ADMIN_PAGE=off` removes the page and its API entirely.
+  - `NOTESYNC_ADMIN_PAGE=off` doesn't open the admin port at all.
 - **Isolation:** every vault query is limited to the signed-in user, with tests for it. File contents are stored per vault, so users never share stored files, even identical ones.
 - **Size limits:** sign-in requests are capped at 16 KB, file uploads at the file limit plus 1 MB, and everything else at 16 MB.
 - **Logs** never include tokens, passwords or note contents.
@@ -234,12 +237,12 @@ POST /vaults/7/commit
 
 ```mermaid
 flowchart LR
-  REQ["HTTPS request<br/>(via Tailscale or proxy)"] --> ROUTER["api/mod.rs<br/>routes, body size limit"]
+  REQ["HTTPS request<br/>(via Tailscale or proxy)"] --> ROUTER["api/mod.rs<br/>sync routes, body size limit"]
+  AREQ["Admin HTTPS request<br/>(separate address)"] --> ADMIN
   ROUTER --> EXTRACT["api/extract.rs<br/>JSON errors for bad input"]
   ROUTER --> AUTH["auth.rs<br/>token check, login,<br/>rate limit"]
   ROUTER --> ACCOUNT["api/account.rs<br/>sign in, devices, vaults"]
-  ROUTER --> ADMIN["api/admin.rs<br/>admin page and API,<br/>admin sessions"]
-  ADMIN --> USERS
+  ADMIN["api/admin.rs<br/>admin page and API,<br/>admin sessions"] --> USERS
   ROUTER --> FILES["api/files.rs<br/>state, changes, upload,<br/>download, commit"]
   FILES --> PATHS["paths.rs<br/>path rules"]
   FILES --> SYNC["sync.rs<br/>commits, change feed,<br/>history"]
@@ -453,7 +456,7 @@ Each test starts the app with a temporary SQLite file and a temporary folder, th
 | Area | Example tests |
 |---|---|
 | Login | Correct and wrong password; disabled user; revoked token; rate limit kicks in |
-| Admin page | Only admins sign in; cookie flags; the header is required; idle and maximum session length; sessions end on password or role change; every user action; password needed for admin rights and passwords; page headers; turning it off |
+| Admin page | Only admins sign in; cookie flags; the header is required; idle and maximum session length; sessions end on password or role change; every user action including delete; password needed for deletes, admin rights and passwords; the only admin can't be deleted; page headers; the sync address has no admin routes |
 | Isolation | User B gets 404 for every route on user A's vault |
 | Vaults | Create, list, rename, delete; duplicate names per user are rejected |
 | Uploads | Upload and download round-trip; hash mismatch; too large; "missing" check |

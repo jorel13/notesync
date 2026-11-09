@@ -8,14 +8,17 @@ services:
     # Published by the release workflow. Replace <owner> with the GitHub account
     # that hosts the repository, and pin a version rather than using "latest".
     # To build it yourself instead: docker build -t notesync-server server
-    image: ghcr.io/<owner>/notesync-server:0.3.0
+    image: ghcr.io/<owner>/notesync-server:0.4.0
     user: "${NOTESYNC_UID:-568}:${NOTESYNC_GID:-568}"
     environment:
       - NOTESYNC_MAX_FILE_MB=${NOTESYNC_MAX_FILE_MB:-100}
       - NOTESYNC_HISTORY_DAYS=${NOTESYNC_HISTORY_DAYS:-30}
       - NOTESYNC_LOG=${NOTESYNC_LOG:-info}
     ports:
+      # Sync API: publish this one to everyone who syncs (Tailscale Service "notes").
       - "127.0.0.1:${NOTESYNC_PORT:-30080}:8080"
+      # Admin page: publish separately, to admins only (Tailscale Service "notes-admin").
+      - "127.0.0.1:${NOTESYNC_ADMIN_PORT:-30081}:8081"
     volumes:
       - ${NOTESYNC_DATA_PATH:?set NOTESYNC_DATA_PATH to a folder for the database and files}:/data
     restart: unless-stopped

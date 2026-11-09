@@ -84,6 +84,8 @@ describe.skipIf(!available)("end to end with the real server", () => {
       NOTESYNC_DATA_DIR: dataDir,
       NOTESYNC_BIND_ADDR: `127.0.0.1:${port}`,
       NOTESYNC_LOG: "warn",
+      // Tests run several servers at once; they'd all want the admin port.
+      NOTESYNC_ADMIN_PAGE: "off",
       // The tests sync far more often than a real device.
       NOTESYNC_SYNC_BURST: "10000",
       NOTESYNC_LOGIN_BURST: "100",

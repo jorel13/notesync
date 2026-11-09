@@ -24,8 +24,11 @@ pub struct Config {
     pub sync_rate: Rate,
     /// All other requests per device.
     pub request_rate: Rate,
-    /// Serve the admin web page at `/admin`.
+    /// Serve the admin web page.
     pub admin_page: bool,
+    /// Where the admin page listens. Always a different address from
+    /// `bind_addr`, so the sync API can be published without it.
+    pub admin_bind_addr: SocketAddr,
 }
 
 impl Config {
@@ -50,6 +53,7 @@ impl Config {
                 every: Duration::from_millis(50),
             },
             admin_page: true,
+            admin_bind_addr: "127.0.0.1:8081".parse().expect("valid default address"),
         }
     }
 
@@ -76,6 +80,12 @@ impl Config {
             "off" | "false" | "0" | "no" => false,
             _ => bail!("NOTESYNC_ADMIN_PAGE must be on or off"),
         };
+        config.admin_bind_addr = env_or("NOTESYNC_ADMIN_BIND_ADDR", "127.0.0.1:8081")
+            .parse()
+            .context("NOTESYNC_ADMIN_BIND_ADDR must be an address like 127.0.0.1:8081")?;
+        if config.admin_page && config.admin_bind_addr.port() == config.bind_addr.port() {
+            bail!("NOTESYNC_ADMIN_BIND_ADDR must use a different port from NOTESYNC_BIND_ADDR");
+        }
         Ok(config)
     }
 

@@ -60,6 +60,13 @@ enum UserCommand {
     MakeAdmin { username: String },
     /// Clear a sign-in lockout after repeated wrong passwords.
     Unlock { username: String },
+    /// Delete a user with all their vaults and stored files. Can't be undone.
+    Delete {
+        username: String,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
     /// List all users.
     List,
 }
@@ -125,13 +132,38 @@ async fn serve(state: AppState) -> anyhow::Result<()> {
         }
     });
 
+    // One shutdown signal, shared by both listeners.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = stop_tx.send(true);
+    });
+    let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+        let _ = rx.wait_for(|stop| *stop).await;
+    };
+
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
-    tracing::info!("listening on http://{addr}");
-    axum::serve(listener, api::router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    tracing::info!("sync API listening on http://{addr}");
+    let sync = axum::serve(listener, api::router(state.clone()))
+        .with_graceful_shutdown(stopped(stop_rx.clone()));
+
+    if !state.config.admin_page {
+        tracing::info!("admin page is turned off");
+        sync.await?;
+        return Ok(());
+    }
+    let admin_addr = state.config.admin_bind_addr;
+    let admin_listener = tokio::net::TcpListener::bind(admin_addr)
+        .await
+        .with_context(|| format!("binding {admin_addr} for the admin page"))?;
+    tracing::info!("admin page listening on http://{admin_addr}/admin");
+    let admin = axum::serve(admin_listener, api::admin_router(state))
+        .with_graceful_shutdown(stopped(stop_rx));
+    tokio::try_join!(async { sync.await.context("sync API") }, async {
+        admin.await.context("admin page")
+    },)?;
     Ok(())
 }
 
@@ -187,6 +219,23 @@ async fn user_command(state: &AppState, command: UserCommand) -> anyhow::Result<
         UserCommand::MakeAdmin { username } => {
             users::set_admin(pool, &username, true).await?;
             println!("{username} is now an admin.");
+        }
+        UserCommand::Delete { username, yes } => {
+            if !yes {
+                let vaults = users::vaults(pool, &username, false).await?.len()
+                    + users::vaults(pool, &username, true).await?.len();
+                println!(
+                    "This permanently deletes {username}, their {vaults} vault(s) and every stored file. It can't be undone."
+                );
+                println!("Type the username to confirm:");
+                let mut line = String::new();
+                std::io::stdin().lock().read_line(&mut line)?;
+                if line.trim() != username {
+                    bail!("not confirmed; nothing was deleted");
+                }
+            }
+            let removed = users::delete_user(state, &username).await?;
+            println!("Deleted {username} and {removed} vault(s).");
         }
         UserCommand::Unlock { username } => {
             users::unlock(pool, &username).await?;

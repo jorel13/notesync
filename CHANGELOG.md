@@ -4,6 +4,25 @@ The plugin and server share one version number. Every change to either one gets 
 version, so Settings > notesync > Status (plugin) and `/api/v1/health` (server) show
 whether a fix has reached a device.
 
+## 0.4.0 (2026-11-09)
+
+### Server
+- **The admin page has its own port.** It's served on `NOTESYNC_ADMIN_BIND_ADDR`
+  (`127.0.0.1:8081` by default, `0.0.0.0:8081` in the container) and no longer on the sync
+  port. Publish it as its own name, such as a `notes-admin` Tailscale Service limited to you,
+  so people who only sync can't reach the admin sign-in.
+- **Delete a user:** the admin page's **Delete user** (asks for your password) and
+  `notesync-server user delete <name>` remove the account, its vaults, history and stored
+  files. The only admin can't be deleted.
+
+### Docs
+- Deployment guide: publishing the two ports, Tailscale grants that keep the admin page to
+  you, and a new "Managing people and devices" section, including sharing the server with
+  family.
+
+### Plugin
+- No changes apart from the version number.
+
 ## 0.3.0 (2026-11-09)
 
 ### Server

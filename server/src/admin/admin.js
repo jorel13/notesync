@@ -401,6 +401,28 @@ async function openUser(name) {
       }, "Remove admin"),
     );
   }
+  if (!isMe) {
+    const vaultCount = detail.vaults.length + detail.deleted_vaults.length;
+    actions.push(
+      el("button", {
+        class: "danger",
+        onclick: () =>
+          dialog({
+            title: `Delete ${u.username}?`,
+            text: `This permanently deletes the account, its ${vaultCount} vault(s) and every stored file and old version. It can't be undone. Their devices keep their local copies. To only block them, use Disable instead.`,
+            fields: [yourPassword],
+            ok: "Delete user",
+            danger: true,
+            submit: (v) => api("DELETE", path, v),
+          }).then((v) => {
+            if (!v) return;
+            notice(`Deleted ${u.username}.`);
+            closeUser();
+            loadUsers();
+          }),
+      }, "Delete user"),
+    );
+  }
   $("detail-actions").replaceChildren(...actions);
 
   fill(

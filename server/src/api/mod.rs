@@ -9,7 +9,7 @@ mod vaults;
 use axum::{
     extract::{DefaultBodyLimit, Request},
     middleware::{self, Next},
-    response::Response,
+    response::{Redirect, Response},
     routing::{delete, get, patch, post, put},
     Json, Router,
 };
@@ -31,8 +31,7 @@ const DEFAULT_BODY_LIMIT: usize = 16 * 1024 * 1024;
 pub fn router(state: AppState) -> Router {
     // Leave room above the file size limit so oversized uploads get a clear error.
     let upload_limit = state.config.max_file_bytes as usize + 1024 * 1024;
-    let admin_page = state.config.admin_page;
-    let mut api = Router::new()
+    let api = Router::new()
         .route("/health", get(health))
         .route(
             "/auth/login",
@@ -56,16 +55,24 @@ pub fn router(state: AppState) -> Router {
                 .get(files::get_blob),
         )
         .route("/vaults/{id}/commit", post(files::commit))
-        .route("/vaults/{id}/history", get(files::history));
-    let mut root = Router::new();
-    if admin_page {
-        api = api.nest("/admin", admin::routes());
-        root = root.merge(admin::page_routes());
-    }
-    let api = api
+        .route("/vaults/{id}/history", get(files::history))
         .layer(middleware::from_fn(check_client_version))
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT));
-    root.nest("/api/v1", api)
+    Router::new()
+        .nest("/api/v1", api)
+        .with_state(state)
+        .layer(TraceLayer::new_for_http())
+}
+
+/// The admin page and its API. Served on its own address
+/// (`NOTESYNC_ADMIN_BIND_ADDR`), never on the sync address, so it can be
+/// published to fewer people than the sync API.
+pub fn admin_router(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(|| async { Redirect::to("/admin") }))
+        .merge(admin::page_routes())
+        .nest("/api/v1/admin", admin::routes())
+        .layer(DefaultBodyLimit::max(SIGN_IN_BODY_LIMIT))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

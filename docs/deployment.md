@@ -14,24 +14,29 @@ flowchart LR
   subgraph Host["Server host (e.g. TrueNAS)"]
     TSD["Tailscale<br/>serve / Services<br/>HTTPS :443"]
     subgraph Container["notesync container (user 568)"]
-      SRV["notesync-server<br/>HTTP :8080"]
+      SRV["notesync-server<br/>sync API :8080"]
+      ADM["admin page :8081"]
     end
     subgraph Dataset["Dataset, e.g. apps/notesync"]
       DB[("notesync.db")]
       BLOBS[("blobs/")]
     end
     SNAP["Periodic<br/>snapshots"]
-    TSD -- "http://127.0.0.1:30080" --> SRV
+    TSD -- "svc:notes<br/>127.0.0.1:30080" --> SRV
+    TSD -- "svc:notes-admin<br/>127.0.0.1:30081" --> ADM
     SRV --> DB
     SRV --> BLOBS
     SNAP -.-> Dataset
   end
 
-  TSC -- "https://notes.&lt;tailnet&gt;.ts.net<br/>(WireGuard)" --> TSD
+  TSC -- "https://notes.&lt;tailnet&gt;.ts.net<br/>https://notes-admin.&lt;tailnet&gt;.ts.net<br/>(WireGuard)" --> TSD
 ```
 
-The server only listens on the host's loopback address. Tailscale (or a reverse proxy) adds
-HTTPS and decides who can reach it; notesync's own accounts decide whose vaults they see.
+The server listens on two ports: the **sync API** (8080) for every device, and the **admin
+page** (8081) for admins. Both are bound to the host's loopback address. Tailscale (or a
+reverse proxy) adds HTTPS and decides who can reach each one; notesync's own accounts decide
+whose vaults they see. Publishing them separately means people who only sync can't even reach
+the admin sign-in.
 
 ## 1. Get the server image
 
@@ -51,13 +56,15 @@ docker build -t notesync-server server
 1. Create a folder for its data, owned by the user the container runs as (568:568 by
    default, which matches the `apps` user on TrueNAS).
 2. Start it with [deploy/compose.example.yaml](../deploy/compose.example.yaml), adapted to
-   your paths. The example binds the port to `127.0.0.1` so it's reachable only through the
-   HTTPS front end on the same machine.
+   your paths. The example binds both ports to `127.0.0.1` (30080 for sync, 30081 for the
+   admin page) so they're reachable only through the HTTPS front end on the same machine.
 3. Check it's up from the host:
 
    ```bash
    curl http://127.0.0.1:30080/api/v1/health
    ```
+
+   `http://127.0.0.1:30081/admin` should return the admin page's HTML.
 
 ### On TrueNAS
 
@@ -69,14 +76,40 @@ docker build -t notesync-server server
 
 ## 3. Put HTTPS in front
 
-The plugin needs an `https://` address. Any of these work:
+The plugin needs an `https://` address, and so does the admin page (its sign-in cookie is
+marked secure). Publish the two ports as two names:
 
-- **Tailscale Services:** `tailscale serve --service=svc:notes --https=443 http://127.0.0.1:30080`
-  on a tagged host, which gives `https://notes.<tailnet>.ts.net`.
-- **Tailscale Serve** on the same machine, if you don't use Services.
-- **Caddy or another reverse proxy**, with a certificate for your own domain.
+- **Tailscale Services (recommended):** on a tagged host, define two Services, `notes` and
+  `notes-admin`, then run
 
-Serve the server at the root of its own name; it doesn't support sub-paths.
+  ```bash
+  tailscale serve --service=svc:notes --https=443 http://127.0.0.1:30080
+  ```
+  ```bash
+  tailscale serve --service=svc:notes-admin --https=443 http://127.0.0.1:30081
+  ```
+
+  This gives `https://notes.<tailnet>.ts.net` and `https://notes-admin.<tailnet>.ts.net`. Limit
+  `notes-admin` to yourself with grants in the tailnet policy, for example:
+
+```jsonc
+"grants": [
+  // You: everything, including the admin page.
+  {"src": ["you@example.com"], "dst": ["*"], "ip": ["*"]},
+  {"src": ["you@example.com"], "dst": ["svc:notes", "svc:notes-admin"], "ip": ["tcp:443"]},
+  // Everyone in the tailnet: their own devices and the sync API, nothing else.
+  {"src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"]},
+  {"src": ["autogroup:member"], "dst": ["svc:notes"], "ip": ["tcp:443"]},
+],
+```
+
+  Remove Tailscale's default allow-everything rule (`"src": ["*"], "dst": ["*:*"]`), or it
+  overrides this. Check the result in the policy editor's **Preview rules** tab.
+- **Caddy or another reverse proxy**, with a certificate for your own domain. Put the admin
+  port on a name only you can reach, for example one that only answers on your LAN.
+
+Serve each at the root of its own name; neither supports sub-paths. The sync address has no
+admin page: `https://notes.<tailnet>.ts.net/admin` returns Not Found.
 
 ## 4. Create accounts
 
@@ -92,18 +125,19 @@ for the other commands.
 
 ### The admin page
 
-Open `https://notes.<tailnet>.ts.net/admin` and sign in with an admin account. From there you
-can add users, set passwords, disable accounts, grant admin rights, clear lockouts, sign out
-lost devices, restore deleted vaults, see storage use and run cleanup.
+Open `https://notes-admin.<tailnet>.ts.net` and sign in with an admin account. From there you
+can add and delete users, set passwords, disable accounts, grant admin rights, clear
+lockouts, sign out lost devices, restore deleted vaults, see storage use and run cleanup.
 
+- It's on its own port (8081 in the container, `NOTESYNC_ADMIN_BIND_ADDR`), never on the
+  sync port, so you can publish it to fewer people.
 - Only admin accounts can sign in. A session ends after 30 minutes without use, or 12 hours
   after signing in.
-- Setting someone's password and granting admin rights ask for your own password again.
+- Deleting a user, setting someone's password and granting admin rights ask for your own
+  password again.
 - Every action is logged with your username.
-- The page is served by the same server and port as the API, so it's only reachable the
-  same way the plugin is (through Tailscale or your proxy). To turn it off, set
-  `NOTESYNC_ADMIN_PAGE=off`.
 - It needs HTTPS (or `localhost`), because the sign-in cookie is marked secure.
+- To turn it off, set `NOTESYNC_ADMIN_PAGE=off`; the command line still works.
 
 ## 5. Install the plugin
 
@@ -134,6 +168,49 @@ The plugin needs Obsidian 1.11.4 or newer.
 
 **Tip for the second device:** start from an empty vault and let the first sync download
 everything. That avoids conflict copies for files that differ only slightly.
+
+## Managing people and devices
+
+Someone needs two things to sync: a way to **reach** the server (with Tailscale, a login on
+your tailnet) and a **notesync account**. They're separate, and removing either one cuts off
+access. Do notesync tasks in the admin page or with the command line in the container.
+
+### Sharing with family or friends
+
+With Tailscale, each person **joins your tailnet as a user**. Tailscale's "share a machine"
+feature doesn't work here: it can't share tagged devices, and a Services host must be
+tagged. The free Personal plan allows 6 users with unlimited devices.
+
+1. **Tailscale:** invite them from the admin console's **Users** page, as a **Member** (not an
+   Admin). They install the Tailscale app on each device and sign in with the invited
+   account. Your grants decide what they reach: with the example above, only `notes` and
+   their own devices. Add other Services to the `autogroup:member` grant if you want to share
+   them; never `notes-admin`.
+2. **notesync:** in the admin page, **Add user** with a temporary password (leave Admin off),
+   and give it to them privately.
+3. **Their devices:** install the plugin, sign in with `https://notes.<tailnet>.ts.net`, and
+   create a vault. Then have them change the password in Settings > notesync.
+
+Each person's vaults are private to their account. Admins see vault names and sizes in the
+admin page, not the notes.
+
+### Common tasks
+
+| Task | Admin page | Command line | Tailscale |
+|---|---|---|---|
+| Add a person | **Add user** | `user add <name>` | Invite them on the Users page |
+| Forgotten password | the user > **Set password** (signs them out everywhere) | `user passwd <name>` | – |
+| Locked out after wrong passwords | the user > **Unlock sign-in** | `user unlock <name>` | – |
+| New device | – (they just sign in) | – | They sign in to the Tailscale app on it |
+| Lost or stolen device | the user > Signed-in devices > **Sign out** | – (or `user passwd`, which signs out all) | Machines page > the device > **Remove** |
+| Block someone, keep their notes | the user > **Disable** | `user disable <name>` | Optionally remove them on the Users page |
+| Remove someone and their notes | the user > **Delete user** | `user delete <name>` | Remove them on the Users page |
+| Restore a deleted vault | the user > Deleted vaults > **Restore** | `vault restore --user <name> <id>` | – |
+| Another admin | the user > **Make admin** | `user make-admin <name>` | Add them to the `notes-admin` grant |
+
+**Deleting a user** permanently removes their account, vaults, history and stored files. It
+can't be undone, and Restore doesn't apply. Their devices keep their local copies. The only
+admin can't be deleted, and an admin can't delete their own account from the admin page.
 
 ## Backups
 
@@ -218,6 +295,11 @@ renew themselves.
 
 **Upgrading to 0.3.0:** adds the admin page. 0.2.0 plugins keep working, so the plugin
 update can wait. The database change (a table for admin page sign-ins) runs on start.
+
+**Upgrading to 0.4.0:** the admin page moves from `/admin` on the sync port to its own port,
+8081 in the container. Add the second port to your compose file (`127.0.0.1:30081:8081` in
+the example), publish it as its own name (`svc:notes-admin`), and limit that name to admins
+(see [Put HTTPS in front](#3-put-https-in-front)). Plugins don't need updating.
 
 **Check which versions are running**
 - **Plugin:** Settings > notesync > Status shows "Plugin version x.y.z", the build Obsidian

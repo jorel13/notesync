@@ -4,7 +4,7 @@ use anyhow::{bail, Context};
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-use crate::{auth, db::now};
+use crate::{auth, db::now, state::AppState};
 
 pub const MIN_PASSWORD_CHARS: usize = 8;
 pub const MAX_PASSWORD_CHARS: usize = 1024;
@@ -189,6 +189,47 @@ pub async fn unlock(pool: &SqlitePool, username: &str) -> anyhow::Result<()> {
     user_id(pool, username).await?;
     auth::clear_failures(pool, &auth::limit_key(username)).await?;
     Ok(())
+}
+
+/// Deletes a user with all their vaults, stored files and devices. This
+/// can't be undone. Returns how many vaults were removed. The only admin
+/// can't be deleted, so the server always keeps one.
+pub async fn delete_user(state: &AppState, username: &str) -> anyhow::Result<usize> {
+    let id = user_id(&state.pool, username).await?;
+    let is_admin: i64 = sqlx::query_scalar("SELECT is_admin FROM users WHERE id = ?")
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await?;
+    if is_admin != 0 {
+        let admins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE is_admin = 1")
+            .fetch_one(&state.pool)
+            .await?;
+        if admins <= 1 {
+            bail!("{username} is the only admin; make someone else an admin first");
+        }
+    }
+    // Same lock as commits and cleanup, so no upload lands in a vault
+    // while its folder is being removed.
+    let _guard = state.write_lock.lock().await;
+    let vaults: Vec<i64> = sqlx::query_scalar("SELECT id FROM vaults WHERE owner_id = ?")
+        .bind(id)
+        .fetch_all(&state.pool)
+        .await?;
+    let mut tx = state.pool.begin().await?;
+    // Devices, vaults, their history and admin sessions go with the user.
+    sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM login_failures WHERE username_key = ?")
+        .bind(auth::limit_key(username))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    for vault in &vaults {
+        state.blobs.remove_vault(*vault).await?;
+    }
+    Ok(vaults.len())
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]

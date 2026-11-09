@@ -3,7 +3,7 @@
 Self-hosted sync for Obsidian vaults: a small Rust server you run yourself, and an
 Obsidian plugin for desktop and mobile.
 
-> **Status: early development (0.3.0, see the [changelog](CHANGELOG.md)).** The server and plugin are complete for v1 and
+> **Status: early development (0.4.0, see the [changelog](CHANGELOG.md)).** The server and plugin are complete for v1 and
 > covered by automated tests, but haven't had much real-world use yet. Keep a backup of
 > your vault.
 
@@ -48,6 +48,7 @@ Check it's up at `http://127.0.0.1:8080/api/v1/health`.
 | `notesync-server user disable <name>` / `enable <name>` | Block or unblock a user |
 | `notesync-server user make-admin <name>` | Give a user admin rights |
 | `notesync-server user unlock <name>` | Clear a lockout after too many wrong passwords |
+| `notesync-server user delete <name>` | Delete a user with all their vaults and files (asks you to type the name) |
 | `notesync-server user list` | List users, their signed-in devices and any lockout |
 | `notesync-server vault list --user <name> [--deleted]` | List a user's vaults, or the deleted ones that can be restored |
 | `notesync-server vault restore --user <name> <id>` | Restore a deleted vault |
@@ -58,11 +59,12 @@ standard input instead.
 
 ### Admin page
 
-Open `/admin` on the server (for example `http://127.0.0.1:8080/admin`) and sign in with an
-admin account. It does what the user and vault commands do, plus a server overview: add
-users, set passwords, disable or enable accounts, grant admin rights, clear lockouts, sign
-out devices, restore deleted vaults and run cleanup. Create the first admin with
-`user add <name> --admin`.
+The admin page runs on its own port, `NOTESYNC_ADMIN_BIND_ADDR` (`127.0.0.1:8081` by
+default), never on the sync port, so it can be published to admins only. Open
+`http://127.0.0.1:8081/admin` and sign in with an admin account. It does what the user and
+vault commands do, plus a server overview: add and delete users, set passwords, disable or
+enable accounts, grant admin rights, clear lockouts, sign out devices, restore deleted vaults
+and run cleanup. Create the first admin with `user add <name> --admin`.
 
 ### Configuration
 
@@ -76,7 +78,8 @@ out devices, restore deleted vaults and run cleanup. Create the first admin with
 | `NOTESYNC_LOGIN_BURST` / `NOTESYNC_LOGIN_EVERY_SECONDS` | `10` / `5` | Sign-in attempts per username: 10 at once, then one every 5 seconds |
 | `NOTESYNC_SYNC_BURST` / `NOTESYNC_SYNC_EVERY_SECONDS` | `10` / `5` | Sync runs per device, the same way |
 | `NOTESYNC_REQUEST_BURST` / `NOTESYNC_REQUESTS_PER_SECOND` | `600` / `20` | All other requests per device (a sync makes one per file it uploads or downloads) |
-| `NOTESYNC_ADMIN_PAGE` | `on` | Serve the admin web page at `/admin`; `off` removes it |
+| `NOTESYNC_ADMIN_BIND_ADDR` | `127.0.0.1:8081` | Listen address for the admin page; must use a different port from `NOTESYNC_BIND_ADDR` |
+| `NOTESYNC_ADMIN_PAGE` | `on` | Serve the admin page; `off` turns it off |
 | `NOTESYNC_LOG` | `info` | Log level (`error`, `warn`, `info`, `debug`) |
 
 ### Tests
@@ -105,8 +108,9 @@ yourself:
 docker build -t notesync-server server
 ```
 
-Then adapt [deploy/compose.example.yaml](deploy/compose.example.yaml), and create the first
-user inside the container:
+Then adapt [deploy/compose.example.yaml](deploy/compose.example.yaml), which publishes the
+sync API (8080) and the admin page (8081) on separate ports, and create the first user inside
+the container:
 
 ```bash
 docker exec -it <container> notesync-server user add alice --admin
@@ -115,7 +119,7 @@ docker exec -it <container> notesync-server user add alice --admin
 Back up the data folder (`notesync.db` and `blobs/`) like any other database.
 
 [docs/deployment.md](docs/deployment.md) covers the whole setup, including TrueNAS,
-HTTPS, installing the plugin on each device and updating.
+HTTPS, installing the plugin on each device, sharing the server with family and updating.
 
 ## License
 

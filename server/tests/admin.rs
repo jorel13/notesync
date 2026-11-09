@@ -45,7 +45,7 @@ impl<'a> Browser<'a> {
                 .unwrap(),
             None => builder.body(Body::empty()).unwrap(),
         };
-        let res = self.app.router.clone().oneshot(req).await.unwrap();
+        let res = self.app.admin.clone().oneshot(req).await.unwrap();
         let status = res.status();
         let set_cookie = res
             .headers()
@@ -174,18 +174,24 @@ async fn only_admins_can_sign_in() {
 
     // A device token is not an admin session, even for an admin.
     let token = app.login("root").await;
-    let (status, _) = app
-        .call("GET", "/api/v1/admin/users", Some(&token), None)
-        .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "no admin header");
-    let req = Request::builder()
-        .uri("/api/v1/admin/users")
-        .header("x-notesync-admin", "1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, _) = app.send(req).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    for (admin_header, expected) in [
+        (false, StatusCode::FORBIDDEN),
+        (true, StatusCode::UNAUTHORIZED),
+    ] {
+        let mut req = Request::builder()
+            .uri("/api/v1/admin/users")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"));
+        if admin_header {
+            req = req.header("x-notesync-admin", "1");
+        }
+        let res = app
+            .admin
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), expected, "admin header: {admin_header}");
+    }
 }
 
 #[tokio::test]
@@ -517,7 +523,7 @@ async fn the_page_is_served_with_strict_headers() {
         ("/admin/admin.css", "text/css"),
     ] {
         let res = app
-            .router
+            .admin
             .clone()
             .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
             .await
@@ -535,21 +541,95 @@ async fn the_page_is_served_with_strict_headers() {
 }
 
 #[tokio::test]
-async fn the_page_can_be_turned_off() {
-    let app = TestApp::with_config(|c| c.admin_page = false).await;
-    users::create_user(&app.state.pool, "root", PASSWORD, true)
+async fn the_sync_address_has_no_admin_page() {
+    let app = app_with_admin().await;
+    for path in ["/admin", "/admin/admin.js"] {
+        let (status, _) = app.call("GET", path, None, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+    }
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/login")
+        .header("x-notesync-admin", "1")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "username": "root", "password": PASSWORD }).to_string(),
+        ))
+        .unwrap();
+    let (status, _) = app.send(req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The admin address redirects its root to the page.
+    let res = app
+        .admin
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
         .await
         .unwrap();
-    let (status, _) = app.call("GET", "/admin", None, None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(res.status().is_redirection());
+    assert_eq!(res.headers()[header::LOCATION], "/admin");
+}
+
+#[tokio::test]
+async fn delete_users() {
+    let app = app_with_admin().await;
+    let alice = app.user("alice").await;
+    let vault = app.create_vault(&alice, "Notes").await;
+    app.put_file(&alice, vault, "a.md", b"hello", None).await;
+    let blob_dir = app.state.config.blob_dir().join(vault.to_string());
+    assert!(blob_dir.exists());
+
     let mut browser = Browser::new(&app);
-    let r = browser
-        .raw(
-            "POST",
-            "/login",
-            Some(json!({ "username": "root", "password": PASSWORD })),
-            true,
+    browser.sign_in("root").await;
+
+    let (status, _) = browser
+        .call(
+            "DELETE",
+            "/users/alice",
+            Some(json!({ "admin_password": "wrong password" })),
         )
         .await;
-    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::FORBIDDEN, "needs the admin's password");
+    let (status, body) = browser
+        .call(
+            "DELETE",
+            "/users/root",
+            Some(json!({ "admin_password": PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = browser
+        .call(
+            "DELETE",
+            "/users/alice",
+            Some(json!({ "admin_password": PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["vaults_removed"], 1);
+    assert!(!blob_dir.exists(), "stored files are removed");
+    let (status, _) = app.call("GET", "/api/v1/me", Some(&alice), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = browser.call("GET", "/users/alice", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM changes")
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "history goes with the vault");
+
+    // The name can be used again.
+    app.add_user("alice").await;
+}
+
+#[tokio::test]
+async fn the_only_admin_cant_be_deleted() {
+    let app = app_with_admin().await;
+    let err = users::delete_user(&app.state, "root").await.unwrap_err();
+    assert!(err.to_string().contains("only admin"), "{err}");
+    users::create_user(&app.state.pool, "second", PASSWORD, true)
+        .await
+        .unwrap();
+    users::delete_user(&app.state, "root").await.unwrap();
 }

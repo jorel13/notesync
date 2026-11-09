@@ -52,7 +52,7 @@ pub fn routes() -> Router<AppState> {
         .route("/overview", get(overview))
         .route("/gc", post(run_gc))
         .route("/users", get(list_users).post(create_user))
-        .route("/users/{name}", get(user_detail))
+        .route("/users/{name}", get(user_detail).delete(delete_user))
         .route("/users/{name}/password", put(set_password))
         .route("/users/{name}/disabled", put(set_disabled))
         .route("/users/{name}/admin", put(set_admin))
@@ -563,6 +563,30 @@ async fn set_admin(
         .map_err(user_error)?;
     tracing::info!(admin = %admin.username, username = %name, is_admin = req.is_admin, "admin rights changed");
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteUserRequest {
+    admin_password: String,
+}
+
+/// Deletes a user and everything they stored. Needs the admin's password.
+async fn delete_user(
+    admin: AdminSession,
+    State(app): State<AppState>,
+    ApiPath(name): ApiPath<String>,
+    ApiJson(req): ApiJson<DeleteUserRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let id = users::user_id(&app.pool, &name).await.map_err(user_error)?;
+    if id == admin.user_id {
+        return Err(ApiError::InvalidRequest(
+            "You can't delete your own account.".to_string(),
+        ));
+    }
+    confirm(&app, &admin, &req.admin_password).await?;
+    let vaults = users::delete_user(&app, &name).await.map_err(user_error)?;
+    tracing::warn!(admin = %admin.username, username = %name, vaults, "user deleted");
+    Ok(Json(json!({ "vaults_removed": vaults })))
 }
 
 async fn unlock(

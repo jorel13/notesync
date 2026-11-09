@@ -18,7 +18,10 @@ pub const PASSWORD: &str = "correct horse battery";
 pub const MAX_FILE_BYTES: u64 = 64 * 1024;
 
 pub struct TestApp {
+    /// The sync API, as served on `NOTESYNC_BIND_ADDR`.
     pub router: Router,
+    /// The admin page and its API, as served on `NOTESYNC_ADMIN_BIND_ADDR`.
+    pub admin: Router,
     pub state: AppState,
     _dir: TempDir,
 }
@@ -41,6 +44,7 @@ impl TestApp {
         let state = AppState::new(config).await.unwrap();
         Self {
             router: api::router(state.clone()),
+            admin: api::admin_router(state.clone()),
             state,
             _dir: dir,
         }
