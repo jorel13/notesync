@@ -44,6 +44,17 @@ pub async fn create_user(
     validate_username(username).map_err(anyhow::Error::msg)?;
     validate_password(password).map_err(anyhow::Error::msg)?;
     let hash = auth::hash_password(password)?;
+    insert_user(pool, username, &hash, is_admin).await
+}
+
+/// Adds a user whose password is already hashed and validated.
+pub async fn insert_user(
+    pool: &SqlitePool,
+    username: &str,
+    hash: &str,
+    is_admin: bool,
+) -> anyhow::Result<i64> {
+    validate_username(username).map_err(anyhow::Error::msg)?;
     let result = sqlx::query(
         "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)",
     )
@@ -60,7 +71,7 @@ pub async fn create_user(
     }
 }
 
-async fn user_id(pool: &SqlitePool, username: &str) -> anyhow::Result<i64> {
+pub async fn user_id(pool: &SqlitePool, username: &str) -> anyhow::Result<i64> {
     sqlx::query_scalar("SELECT id FROM users WHERE username = ?")
         .bind(username)
         .fetch_optional(pool)
@@ -71,8 +82,17 @@ async fn user_id(pool: &SqlitePool, username: &str) -> anyhow::Result<i64> {
 /// Sets a new password and signs the user out everywhere.
 pub async fn set_password(pool: &SqlitePool, username: &str, password: &str) -> anyhow::Result<()> {
     validate_password(password).map_err(anyhow::Error::msg)?;
-    let id = user_id(pool, username).await?;
     let hash = auth::hash_password(password)?;
+    set_password_hash(pool, username, &hash).await
+}
+
+/// Like `set_password`, with a password that's already validated and hashed.
+pub async fn set_password_hash(
+    pool: &SqlitePool,
+    username: &str,
+    hash: &str,
+) -> anyhow::Result<()> {
+    let id = user_id(pool, username).await?;
     let mut tx = pool.begin().await?;
     sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
         .bind(hash)
@@ -83,7 +103,20 @@ pub async fn set_password(pool: &SqlitePool, username: &str, password: &str) -> 
         .bind(id)
         .execute(&mut *tx)
         .await?;
+    end_admin_sessions(&mut tx, id).await?;
     tx.commit().await?;
+    Ok(())
+}
+
+/// Signs a user out of the admin page.
+pub async fn end_admin_sessions(
+    conn: &mut sqlx::SqliteConnection,
+    user_id: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM admin_sessions WHERE user_id = ?")
+        .bind(user_id)
+        .execute(conn)
+        .await?;
     Ok(())
 }
 
@@ -101,18 +134,25 @@ pub async fn set_disabled(pool: &SqlitePool, username: &str, disabled: bool) -> 
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        end_admin_sessions(&mut tx, id).await?;
     }
     tx.commit().await?;
     Ok(())
 }
 
+/// Removing admin rights also signs the user out of the admin page.
 pub async fn set_admin(pool: &SqlitePool, username: &str, is_admin: bool) -> anyhow::Result<()> {
     let id = user_id(pool, username).await?;
+    let mut tx = pool.begin().await?;
     sqlx::query("UPDATE users SET is_admin = ? WHERE id = ?")
         .bind(is_admin as i64)
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    if !is_admin {
+        end_admin_sessions(&mut tx, id).await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -152,11 +192,55 @@ pub async fn unlock(pool: &SqlitePool, username: &str) -> anyhow::Result<()> {
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct DeviceSummary {
+    pub id: i64,
+    pub name: String,
+    pub created_at: i64,
+    pub last_seen: i64,
+    pub expires_at: i64,
+}
+
+/// A user's signed-in devices whose token still works.
+pub async fn devices(pool: &SqlitePool, username: &str) -> anyhow::Result<Vec<DeviceSummary>> {
+    let id = user_id(pool, username).await?;
+    Ok(sqlx::query_as(
+        "SELECT id, name, created_at, last_seen, expires_at FROM devices
+         WHERE user_id = ? AND revoked = 0 AND expires_at > ? ORDER BY last_seen DESC",
+    )
+    .bind(id)
+    .bind(now())
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Signs one of a user's devices out.
+pub async fn revoke_device(
+    pool: &SqlitePool,
+    username: &str,
+    device_id: i64,
+) -> anyhow::Result<()> {
+    let id = user_id(pool, username).await?;
+    let done =
+        sqlx::query("UPDATE devices SET revoked = 1 WHERE id = ? AND user_id = ? AND revoked = 0")
+            .bind(device_id)
+            .bind(id)
+            .execute(pool)
+            .await?;
+    if done.rows_affected() == 0 {
+        bail!("{username} has no signed-in device with ID {device_id}");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct VaultSummary {
     pub id: i64,
     pub name: String,
     pub head_seq: i64,
     pub deleted_at: Option<i64>,
+    /// Current files and their total size.
+    pub files: i64,
+    pub bytes: i64,
 }
 
 /// A user's vaults; with `deleted`, the deleted ones that can still be restored.
@@ -167,8 +251,12 @@ pub async fn vaults(
 ) -> anyhow::Result<Vec<VaultSummary>> {
     let id = user_id(pool, username).await?;
     Ok(sqlx::query_as(
-        "SELECT id, name, head_seq, deleted_at FROM vaults
-         WHERE owner_id = ? AND (deleted_at IS NOT NULL) = ? ORDER BY name",
+        "SELECT v.id, v.name, v.head_seq, v.deleted_at,
+                (SELECT COUNT(*) FROM current_files f WHERE f.vault_id = v.id) AS files,
+                (SELECT COALESCE(SUM(f.size), 0) FROM current_files f WHERE f.vault_id = v.id)
+                    AS bytes
+         FROM vaults v
+         WHERE v.owner_id = ? AND (v.deleted_at IS NOT NULL) = ? ORDER BY v.name",
     )
     .bind(id)
     .bind(deleted)

@@ -3,7 +3,7 @@
 Self-hosted sync for Obsidian vaults: a small Rust server you run yourself, and an
 Obsidian plugin for desktop and mobile.
 
-> **Status: early development (0.2.0, see the [changelog](CHANGELOG.md)).** The server and plugin are complete for v1 and
+> **Status: early development (0.3.0, see the [changelog](CHANGELOG.md)).** The server and plugin are complete for v1 and
 > covered by automated tests, but haven't had much real-world use yet. Keep a backup of
 > your vault.
 
@@ -56,6 +56,14 @@ Check it's up at `http://127.0.0.1:8080/api/v1/health`.
 Commands that take a password prompt for it; add `--password-stdin` to read it from
 standard input instead.
 
+### Admin page
+
+Open `/admin` on the server (for example `http://127.0.0.1:8080/admin`) and sign in with an
+admin account. It does what the user and vault commands do, plus a server overview: add
+users, set passwords, disable or enable accounts, grant admin rights, clear lockouts, sign
+out devices, restore deleted vaults and run cleanup. Create the first admin with
+`user add <name> --admin`.
+
 ### Configuration
 
 | Variable | Default | Purpose |
@@ -68,6 +76,7 @@ standard input instead.
 | `NOTESYNC_LOGIN_BURST` / `NOTESYNC_LOGIN_EVERY_SECONDS` | `10` / `5` | Sign-in attempts per username: 10 at once, then one every 5 seconds |
 | `NOTESYNC_SYNC_BURST` / `NOTESYNC_SYNC_EVERY_SECONDS` | `10` / `5` | Sync runs per device, the same way |
 | `NOTESYNC_REQUEST_BURST` / `NOTESYNC_REQUESTS_PER_SECOND` | `600` / `20` | All other requests per device (a sync makes one per file it uploads or downloads) |
+| `NOTESYNC_ADMIN_PAGE` | `on` | Serve the admin web page at `/admin`; `off` removes it |
 | `NOTESYNC_LOG` | `info` | Log level (`error`, `warn`, `info`, `debug`) |
 
 ### Tests

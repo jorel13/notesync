@@ -1,6 +1,7 @@
 //! HTTP API under `/api/v1`.
 
 mod account;
+pub mod admin;
 mod extract;
 mod files;
 mod vaults;
@@ -30,7 +31,8 @@ const DEFAULT_BODY_LIMIT: usize = 16 * 1024 * 1024;
 pub fn router(state: AppState) -> Router {
     // Leave room above the file size limit so oversized uploads get a clear error.
     let upload_limit = state.config.max_file_bytes as usize + 1024 * 1024;
-    let api = Router::new()
+    let admin_page = state.config.admin_page;
+    let mut api = Router::new()
         .route("/health", get(health))
         .route(
             "/auth/login",
@@ -54,12 +56,17 @@ pub fn router(state: AppState) -> Router {
                 .get(files::get_blob),
         )
         .route("/vaults/{id}/commit", post(files::commit))
-        .route("/vaults/{id}/history", get(files::history))
+        .route("/vaults/{id}/history", get(files::history));
+    let mut root = Router::new();
+    if admin_page {
+        api = api.nest("/admin", admin::routes());
+        root = root.merge(admin::page_routes());
+    }
+    let api = api
         .layer(middleware::from_fn(check_client_version))
-        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
-        .with_state(state);
-    Router::new()
-        .nest("/api/v1", api)
+        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT));
+    root.nest("/api/v1", api)
+        .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
 

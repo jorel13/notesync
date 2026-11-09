@@ -24,6 +24,8 @@ pub struct Config {
     pub sync_rate: Rate,
     /// All other requests per device.
     pub request_rate: Rate,
+    /// Serve the admin web page at `/admin`.
+    pub admin_page: bool,
 }
 
 impl Config {
@@ -47,6 +49,7 @@ impl Config {
                 burst: 600,
                 every: Duration::from_millis(50),
             },
+            admin_page: true,
         }
     }
 
@@ -67,6 +70,11 @@ impl Config {
         config.request_rate = Rate {
             burst: number("NOTESYNC_REQUEST_BURST", 600)?.max(1) as u32,
             every: Duration::from_secs_f64(1.0 / per_second as f64),
+        };
+        config.admin_page = match env_or("NOTESYNC_ADMIN_PAGE", "on").to_lowercase().as_str() {
+            "on" | "true" | "1" | "yes" => true,
+            "off" | "false" | "0" | "no" => false,
+            _ => bail!("NOTESYNC_ADMIN_PAGE must be on or off"),
         };
         Ok(config)
     }

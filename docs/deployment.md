@@ -86,8 +86,24 @@ Open a shell in the container (on TrueNAS: Apps > notesync > Shell) and run:
 notesync-server user add <name> --admin
 ```
 
-It asks for the password. Add more users without `--admin`. `notesync-server user list` shows
-them; see the main README for the other commands.
+It asks for the password. You can add the other users from the admin page (below) or with
+`notesync-server user add <name>`. `notesync-server user list` shows them; see the main README
+for the other commands.
+
+### The admin page
+
+Open `https://notes.<tailnet>.ts.net/admin` and sign in with an admin account. From there you
+can add users, set passwords, disable accounts, grant admin rights, clear lockouts, sign out
+lost devices, restore deleted vaults, see storage use and run cleanup.
+
+- Only admin accounts can sign in. A session ends after 30 minutes without use, or 12 hours
+  after signing in.
+- Setting someone's password and granting admin rights ask for your own password again.
+- Every action is logged with your username.
+- The page is served by the same server and port as the API, so it's only reachable the
+  same way the plugin is (through Tailscale or your proxy). To turn it off, set
+  `NOTESYNC_ADMIN_PAGE=off`.
+- It needs HTTPS (or `localhost`), because the sign-in cookie is marked secure.
 
 ## 5. Install the plugin
 
@@ -171,14 +187,15 @@ designed for an organization with thousands of users.
 - Free space on the dataset, and the size of `blobs/`.
 - That snapshots are being taken.
 - The server logs for repeated errors, `failed sign-in` and `account locked` lines.
-- `notesync-server user list` for lockouts and for accounts that should be disabled.
+- `notesync-server user list` (or the admin page) for lockouts and for accounts that should
+  be disabled.
 
 **If a device is lost or a token may have leaked:** sign that device out from another
-device, or reset the password with `notesync-server user passwd <name>`, which signs out
+device or from the admin page, or reset the password with `notesync-server user passwd <name>`, which signs out
 every device. An unused token stops working by itself after `NOTESYNC_TOKEN_DAYS`.
 
-**If a vault was deleted by mistake:** `notesync-server vault list --user <name> --deleted`
-shows it and how many days are left, and `notesync-server vault restore --user <name> <id>`
+**If a vault was deleted by mistake:** restore it from the user's page in the admin page,
+or use the command line: `notesync-server vault list --user <name> --deleted` shows it and how many days are left, and `notesync-server vault restore --user <name> <id>`
 brings it back.
 
 ## Updating
@@ -198,6 +215,9 @@ refused by a newer server.
 server sends, and can't renew their sign-in), so update every device's plugin right after
 the server. Devices stay signed in: existing sign-ins get 30 days from the upgrade and then
 renew themselves.
+
+**Upgrading to 0.3.0:** adds the admin page. 0.2.0 plugins keep working, so the plugin
+update can wait. The database change (a table for admin page sign-ins) runs on start.
 
 **Check which versions are running**
 - **Plugin:** Settings > notesync > Status shows "Plugin version x.y.z", the build Obsidian

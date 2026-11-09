@@ -73,5 +73,12 @@ pub async fn run(state: &AppState) -> anyhow::Result<GcReport> {
         .execute(&state.pool)
         .await?;
 
+    // Admin page sign-ins that ended.
+    sqlx::query("DELETE FROM admin_sessions WHERE expires_at < ? OR last_seen < ?")
+        .bind(now)
+        .bind(now - crate::api::admin::IDLE_SECS)
+        .execute(&state.pool)
+        .await?;
+
     Ok(report)
 }

@@ -58,6 +58,7 @@ flowchart LR
   - `notesync-server user add|passwd|disable|enable|list|make-admin` manages accounts.
   - `notesync-server vault list --user <name>` lists a user's vaults.
   - `notesync-server gc` cleans up old data (also runs daily on its own).
+- **Admin web page** at `/admin`, for admin accounts: plain HTML, CSS and JavaScript compiled into the binary, no build step and no outside scripts.
 
 ### Configuration (environment variables)
 
@@ -67,7 +68,11 @@ flowchart LR
 | `NOTESYNC_DATA_DIR` | `./data` | Holds `notesync.db` and `blobs/` |
 | `NOTESYNC_MAX_FILE_MB` | `100` | Largest file accepted |
 | `NOTESYNC_HISTORY_DAYS` | `30` | How long old versions and deleted files are kept |
+| `NOTESYNC_TOKEN_DAYS` | `30` | Device sign-in lifetime without syncing |
+| `NOTESYNC_ADMIN_PAGE` | `on` | Serve the admin web page at `/admin` |
 | `NOTESYNC_LOG` | `info` | Log level |
+
+Rate limits have their own variables; the [README](../README.md#configuration) lists them all.
 
 ### Data model
 
@@ -155,11 +160,28 @@ Every request except login and health checks needs `Authorization: Bearer <token
 | `POST /vaults/{id}/commit` | Apply a batch of changes all at once or not at all (below) |
 | `GET /vaults/{id}/history?path=...` | Past versions of one file |
 
-Admin endpoints for accounts can come later; v1 uses the command line.
+**Admin API** (`/api/v1/admin`, used by the admin page). It uses a session cookie instead of a device token, and every request must send the `X-Notesync-Admin` header (see Security).
 
-**Errors** use one format: `{"error": {"code": "conflict", "message": "..."}}`. Codes include `unauthorized`, `not_found`, `conflict`, `case_conflict`, `invalid_path`, `hash_mismatch`, `too_large`, `rate_limited` and `client_too_old`.
+| Method and path | Purpose |
+|---|---|
+| `POST /admin/login` | `{username, password}`; admin accounts only. Sets the session cookie |
+| `POST /admin/logout` | Ends the session |
+| `GET /admin/session` | The signed-in admin and when the session ends |
+| `GET /admin/overview` | Version, counts, storage use and settings |
+| `POST /admin/gc` | Run cleanup now |
+| `GET /admin/users` | All users, with devices and lockouts |
+| `POST /admin/users` | `{username, password, is_admin}`; adding an admin needs `admin_password` |
+| `GET /admin/users/{name}` | A user with their devices, vaults and deleted vaults |
+| `PUT /admin/users/{name}/password` | `{new_password, admin_password}`; signs the user out everywhere |
+| `PUT /admin/users/{name}/disabled` | `{disabled}` |
+| `PUT /admin/users/{name}/admin` | `{is_admin, admin_password}` |
+| `POST /admin/users/{name}/unlock` | Clear a sign-in lockout |
+| `DELETE /admin/users/{name}/devices/{id}` | Sign out one of the user's devices |
+| `POST /admin/users/{name}/vaults/{id}/restore` | Restore a deleted vault |
 
-**Version check:** the plugin sends `X-Notesync-Client: <version>` (from its manifest), and the server rejects versions older than `MIN_CLIENT_VERSION` with `client_too_old`. The minimum is raised only when the protocol changes or an older plugin has a security problem, not on every release, so updating the server doesn't force every phone to update the same day. 0.2.0 is the current minimum.
+**Errors** use one format: `{"error": {"code": "conflict", "message": "..."}}`. Codes include `unauthorized`, `forbidden`, `not_found`, `conflict`, `case_conflict`, `invalid_path`, `hash_mismatch`, `too_large`, `rate_limited` and `client_too_old`.
+
+**Version check:** the plugin sends `X-Notesync-Client: <version>` (from its manifest), and the server rejects versions older than `MIN_CLIENT_VERSION` with `client_too_old`. The minimum is raised only when the protocol changes or an older plugin has a security problem, not on every release, so updating the server doesn't force every phone to update the same day. 0.2.0 is the current minimum. Requests without the header (the admin page, `curl`) aren't checked.
 
 ### The commit operation
 
@@ -194,6 +216,15 @@ POST /vaults/7/commit
 - **Rate limits** (in memory, token buckets, all configurable): sign-in attempts per username (10, then one every 5 s), sign-in attempts overall (30, then one per second), sync runs per device (10, then one every 5 s) and all requests per device (600, then 20 per second). There's no per-IP limit: behind Tailscale Serve or a local reverse proxy, every request comes from the same local address.
 - **Tokens:** random 256-bit device tokens, stored only as SHA-256 hashes. Each expires `NOTESYNC_TOKEN_DAYS` (30) after it was issued. The plugin swaps its token for a new one about once a day (`refresh_after`), so a copied token stops working soon after and an idle device is signed out after 30 days. After a swap, the previous token works for 10 more minutes, in case the device never received the reply. Tokens can be revoked per device; disabling a user or resetting their password revokes all of them.
 - **Sensitive actions need the password, not just a token:** changing the password and deleting a vault. A changed password signs out the other devices by default.
+- **Admin page:**
+  - Only accounts with admin rights can sign in, with the same lockout and rate limits as devices.
+  - A sign-in is a separate session (`admin_sessions`, token stored as a SHA-256 hash) in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/v1/admin`. Scripts on the page can't read it.
+  - Sessions end after 30 minutes without activity or 12 hours after signing in. They also end when the admin's password changes or the account is disabled or loses admin rights.
+  - Every admin request must carry the `X-Notesync-Admin` header. Another website can't add a custom header to a request here without the browser asking the server first (CORS), and the server never allows it. So a link or form elsewhere can't act as a signed-in admin.
+  - The page is served with a strict Content Security Policy: only its own script and styles, nothing inline, no framing.
+  - Setting another user's password and granting or removing admin rights need the admin's own password again. An admin can't disable themselves or remove their own admin rights.
+  - Every admin action is logged with the admin's name.
+  - `NOTESYNC_ADMIN_PAGE=off` removes the page and its API entirely.
 - **Isolation:** every vault query is limited to the signed-in user, with tests for it. File contents are stored per vault, so users never share stored files, even identical ones.
 - **Size limits:** sign-in requests are capped at 16 KB, file uploads at the file limit plus 1 MB, and everything else at 16 MB.
 - **Logs** never include tokens, passwords or note contents.
@@ -207,6 +238,8 @@ flowchart LR
   ROUTER --> EXTRACT["api/extract.rs<br/>JSON errors for bad input"]
   ROUTER --> AUTH["auth.rs<br/>token check, login,<br/>rate limit"]
   ROUTER --> ACCOUNT["api/account.rs<br/>sign in, devices, vaults"]
+  ROUTER --> ADMIN["api/admin.rs<br/>admin page and API,<br/>admin sessions"]
+  ADMIN --> USERS
   ROUTER --> FILES["api/files.rs<br/>state, changes, upload,<br/>download, commit"]
   FILES --> PATHS["paths.rs<br/>path rules"]
   FILES --> SYNC["sync.rs<br/>commits, change feed,<br/>history"]
@@ -420,6 +453,7 @@ Each test starts the app with a temporary SQLite file and a temporary folder, th
 | Area | Example tests |
 |---|---|
 | Login | Correct and wrong password; disabled user; revoked token; rate limit kicks in |
+| Admin page | Only admins sign in; cookie flags; the header is required; idle and maximum session length; sessions end on password or role change; every user action; password needed for admin rights and passwords; page headers; turning it off |
 | Isolation | User B gets 404 for every route on user A's vault |
 | Vaults | Create, list, rename, delete; duplicate names per user are rejected |
 | Uploads | Upload and download round-trip; hash mismatch; too large; "missing" check |
@@ -454,7 +488,7 @@ Adding it later would mean:
 2. **Sync engine:** in plain TypeScript, with unit tests and two-device end-to-end tests against the real server.
 3. **Obsidian plugin on Windows:** settings, sign-in, status and commands, tested on a copy of your vault.
 4. **Mobile and deployment:** test on Android; deploy behind HTTPS (for example Tailscale Services).
-5. **Polish:** version history and restore screen, admin pages, push updates instead of timers.
+5. **Polish:** version history and restore screen, push updates instead of timers. (The admin page shipped in 0.3.0.)
 6. **Later:** end-to-end encryption, settings and plugin sync, shared vaults.
 
 ## Defaults

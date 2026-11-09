@@ -20,6 +20,9 @@ pub struct PathConflict {
 pub enum ApiError {
     #[error("authentication required")]
     Unauthorized,
+    /// Signed in, but not allowed to do this.
+    #[error("{0}")]
+    Forbidden(String),
     #[error("not found")]
     NotFound,
     #[error("some paths changed on the server")]
@@ -50,6 +53,7 @@ impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict(_) | Self::CaseConflict(_) | Self::NameTaken => StatusCode::CONFLICT,
             Self::InvalidPath(_)
@@ -66,6 +70,7 @@ impl ApiError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Unauthorized => "unauthorized",
+            Self::Forbidden(_) => "forbidden",
             Self::NotFound => "not_found",
             Self::Conflict(_) => "conflict",
             Self::CaseConflict(_) => "case_conflict",

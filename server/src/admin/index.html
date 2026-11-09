@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>notesync admin</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+  <script src="/admin/admin.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <span class="brand">notesync <span class="muted">admin</span></span>
+    <span id="who" class="who" hidden>
+      <span id="who-name"></span>
+      <button id="sign-out" class="link">Sign out</button>
+    </span>
+  </header>
+
+  <main>
+    <div id="notice" class="notice" role="status" hidden></div>
+
+    <section id="sign-in" class="card narrow" hidden>
+      <h1>Sign in</h1>
+      <p class="muted">Admin accounts only.</p>
+      <form id="sign-in-form" autocomplete="on">
+        <label>Username <input name="username" autocomplete="username" required></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit" class="primary">Sign in</button>
+        <p id="sign-in-error" class="error" hidden></p>
+      </form>
+    </section>
+
+    <section id="app" hidden>
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="users" aria-selected="true">Users</button>
+        <button role="tab" data-tab="server" aria-selected="false">Server</button>
+      </nav>
+
+      <div id="tab-users" class="tab">
+        <div class="row-between">
+          <h1>Users</h1>
+          <button id="add-user" class="primary">Add user</button>
+        </div>
+        <div class="table-wrap">
+          <table id="users-table">
+            <thead>
+              <tr><th>Username</th><th>Role</th><th>Status</th><th class="num">Devices</th><th>Created</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div id="user-detail" class="card" hidden>
+          <div class="row-between">
+            <h2 id="detail-name"></h2>
+            <button id="detail-close" class="link">Close</button>
+          </div>
+          <p id="detail-summary" class="muted"></p>
+          <div class="actions" id="detail-actions"></div>
+
+          <h3>Signed-in devices</h3>
+          <div class="table-wrap">
+            <table id="detail-devices">
+              <thead><tr><th>Device</th><th>Last sync</th><th>Sign-in expires</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <h3>Vaults</h3>
+          <div class="table-wrap">
+            <table id="detail-vaults">
+              <thead><tr><th>Name</th><th class="num">Files</th><th class="num">Size</th><th class="num">Changes</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <h3>Deleted vaults</h3>
+          <div class="table-wrap">
+            <table id="detail-deleted">
+              <thead><tr><th>Name</th><th>Deleted</th><th>Removed for good</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-server" class="tab" hidden>
+        <div class="row-between">
+          <h1>Server</h1>
+          <button id="run-gc">Run cleanup now</button>
+        </div>
+        <div id="server-stats" class="stats"></div>
+        <h2>Settings</h2>
+        <p class="muted">Set with <code>NOTESYNC_*</code> environment variables; restart the server to change them.</p>
+        <dl id="server-settings" class="settings"></dl>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="dialog">
+    <form id="dialog-form" method="dialog">
+      <h2 id="dialog-title"></h2>
+      <p id="dialog-text" class="muted"></p>
+      <div id="dialog-fields"></div>
+      <p id="dialog-error" class="error" hidden></p>
+      <div class="dialog-buttons">
+        <button type="button" id="dialog-cancel">Cancel</button>
+        <button type="submit" id="dialog-ok" class="primary">OK</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

@@ -4,6 +4,25 @@ The plugin and server share one version number. Every change to either one gets 
 version, so Settings > notesync > Status (plugin) and `/api/v1/health` (server) show
 whether a fix has reached a device.
 
+## 0.3.0 (2026-11-09)
+
+### Server
+- **Admin web page** at `/admin`, for admin accounts: add users, set passwords, disable or
+  enable accounts, grant or remove admin rights, clear lockouts, sign out devices, restore
+  deleted vaults, see storage use and settings, and run cleanup.
+  - Sign-ins are short sessions (30 minutes idle, 12 hours at most) in a secure,
+    `SameSite=Strict`, `HttpOnly` cookie, with the same lockout and rate limits as devices.
+  - Every request needs the `X-Notesync-Admin` header, so other websites can't act as a
+    signed-in admin. The page has a strict Content Security Policy.
+  - Setting a password and granting admin rights need the admin's own password.
+  - Every action is logged.
+  - `NOTESYNC_ADMIN_PAGE=off` turns it off.
+- Changing a password, disabling an account or removing admin rights also ends that
+  person's admin page sessions.
+
+### Plugin
+- No changes apart from the version number. 0.2.0 plugins keep working with this server.
+
 ## 0.2.0 (2026-11-08)
 
 Security release. **0.2.0 servers refuse 0.1.x plugins**: update the server, then every

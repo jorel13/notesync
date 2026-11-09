@@ -20,6 +20,8 @@ pub struct AppState {
     pub write_lock: Arc<Mutex<()>>,
     pub limits: Arc<Limits>,
     pub hash_slots: Arc<Semaphore>,
+    /// Unix seconds when the server started.
+    pub started_at: i64,
 }
 
 impl AppState {
@@ -35,6 +37,7 @@ impl AppState {
             config: Arc::new(config),
             write_lock: Arc::new(Mutex::new(())),
             hash_slots: Arc::new(Semaphore::new(HASH_SLOTS)),
+            started_at: db::now(),
         })
     }
 }

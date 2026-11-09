@@ -160,6 +160,7 @@ pub async fn change_password(
             .bind(user.device_id)
             .execute(&mut *tx)
             .await?;
+        users::end_admin_sessions(&mut tx, user.user_id).await?;
     }
     tx.commit().await?;
     tracing::info!(username = %user.username, "password changed");
