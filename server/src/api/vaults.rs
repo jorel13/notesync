@@ -2,7 +2,10 @@ use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-use super::extract::{ApiJson, ApiPath};
+use super::{
+    account::confirm_password,
+    extract::{ApiJson, ApiPath},
+};
 use crate::{
     auth::AuthUser,
     db::{is_unique_violation, now},
@@ -115,17 +118,28 @@ pub async fn rename(
     }
 }
 
-/// Marks the vault deleted. Its data is removed by cleanup after the history period.
+#[derive(Debug, Deserialize)]
+pub struct DeleteVaultRequest {
+    password: String,
+}
+
+/// Marks the vault deleted. Needs the account password, so a copied device
+/// token can't delete a whole vault. An admin can restore it with
+/// `notesync-server vault restore` until cleanup removes it after the
+/// history period.
 pub async fn delete(
     user: AuthUser,
     State(app): State<AppState>,
     ApiPath(id): ApiPath<i64>,
+    ApiJson(req): ApiJson<DeleteVaultRequest>,
 ) -> Result<StatusCode, ApiError> {
     owned_vault(&app.pool, user.user_id, id).await?;
+    confirm_password(&app, &user, &req.password).await?;
     sqlx::query("UPDATE vaults SET deleted_at = ? WHERE id = ?")
         .bind(now())
         .bind(id)
         .execute(&app.pool)
         .await?;
+    tracing::warn!(username = %user.username, vault_id = id, "vault deleted");
     Ok(StatusCode::NO_CONTENT)
 }

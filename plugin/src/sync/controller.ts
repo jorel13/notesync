@@ -16,6 +16,8 @@ export type SyncStatus =
 export interface SyncControllerDeps {
   /** The engine for the current settings, or null if sign-in or vault choice is missing. */
   engine(): SyncEngine | null;
+  /** Runs before each sync, e.g. to replace the device token when it's due. */
+  beforeSync?(): Promise<void>;
   /** True if a file event was caused by the sync itself. */
   isOwnChange(path: string): boolean;
   /** Asks the user whether a large delete may go ahead. */
@@ -91,8 +93,7 @@ export class SyncController {
 
   /** Runs a sync now. Never throws; problems end up in the status and notices. */
   async run(trigger: SyncTrigger, allowMassDelete = false): Promise<void> {
-    const engine = this.deps.engine();
-    if (!engine) {
+    if (!this.deps.engine()) {
       this.setStatus({ kind: "not-configured" });
       if (trigger === "manual") {
         this.deps.notify("notesync: sign in and choose a vault in the plugin settings first.");
@@ -104,6 +105,10 @@ export class SyncController {
     this.running++;
     this.setStatus({ kind: "syncing" });
     try {
+      await this.deps.beforeSync?.();
+      // Asked again: beforeSync may have replaced the token.
+      const engine = this.deps.engine();
+      if (!engine) throw new Error("Signed out while starting the sync.");
       const report = await engine.sync({ allowMassDelete });
       this.lastSync = this.now();
       this.lastError = null;
@@ -203,13 +208,14 @@ export function describeError(err: unknown): string {
   if (err instanceof ServerError) {
     switch (err.code) {
       case "unauthorized":
-        return "Signed out by the server. Sign in again in the plugin settings.";
+        return "Signed out by the server (the sign-in expired or was revoked). Sign in again in the plugin settings.";
       case "client_too_old":
         return "The server needs a newer version of this plugin. Update the plugin.";
       case "not_found":
         return "The server vault wasn't found. Choose a vault again in the plugin settings.";
       case "rate_limited":
-        return "Too many attempts. Wait a few minutes and try again.";
+        // The server says how long to wait.
+        return err.message || "Too many requests. Wait a minute and try again.";
       default:
         return err.message;
     }

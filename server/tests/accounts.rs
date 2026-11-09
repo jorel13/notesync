@@ -120,28 +120,222 @@ async fn disabled_users_are_signed_out_and_blocked() {
     app.login("alice").await;
 }
 
+fn sign_in(username: &str, password: &str) -> serde_json::Value {
+    json!({ "username": username, "password": password, "device_name": "pc" })
+}
+
 #[tokio::test]
-async fn repeated_failed_logins_are_rate_limited() {
-    let app = TestApp::new().await;
+async fn repeated_failed_logins_lock_the_account() {
+    // A generous rate limit, so only the lockout is tested here.
+    let app = TestApp::with_config(|c| c.login_rate.burst = 100).await;
     app.add_user("alice").await;
-    let wrong = json!({ "username": "alice", "password": "not the password", "device_name": "pc" });
-    for _ in 0..10 {
-        let (status, _) = app
-            .call("POST", "/api/v1/auth/login", None, Some(wrong.clone()))
+    for attempt in 1..=10 {
+        let (status, body) = app
+            .call(
+                "POST",
+                "/api/v1/auth/login",
+                None,
+                Some(sign_in("alice", "not the password")),
+            )
             .await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let expected = if attempt < 10 {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::TOO_MANY_REQUESTS
+        };
+        assert_eq!(status, expected, "attempt {attempt}: {body}");
     }
-    // Even the right password is refused while the limit applies.
+    // Even the right password is refused while locked, in any letter case.
     let (status, body) = app
         .call(
             "POST",
             "/api/v1/auth/login",
             None,
-            Some(json!({ "username": "ALICE", "password": PASSWORD, "device_name": "pc" })),
+            Some(sign_in("ALICE", PASSWORD)),
         )
         .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(error_code(&body), "rate_limited");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("15 minutes"));
+
+    // The lockout is in the database, so a restart doesn't clear it, and an
+    // admin can see and clear it.
+    let listed = users::list(&app.state.pool).await.unwrap();
+    assert!(listed[0].locked_until > 0);
+    users::unlock(&app.state.pool, "alice").await.unwrap();
+    app.login("alice").await;
+}
+
+#[tokio::test]
+async fn a_correct_password_resets_the_failure_count() {
+    let app = TestApp::with_config(|c| c.login_rate.burst = 100).await;
+    app.add_user("alice").await;
+    for _ in 0..2 {
+        for _ in 0..9 {
+            app.call(
+                "POST",
+                "/api/v1/auth/login",
+                None,
+                Some(sign_in("alice", "wrong password")),
+            )
+            .await;
+        }
+        app.login("alice").await;
+    }
+}
+
+#[tokio::test]
+async fn sign_ins_are_rate_limited_per_username() {
+    let app = TestApp::new().await;
+    app.add_user("alice").await;
+    app.add_user("bob").await;
+    // The default allows a burst of 10, then one every 5 seconds.
+    for _ in 0..10 {
+        app.login("alice").await;
+    }
+    let (status, body) = app
+        .call(
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(sign_in("alice", PASSWORD)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("second"));
+    app.login("bob").await;
+}
+
+#[tokio::test]
+async fn sign_in_requests_must_be_small() {
+    let app = TestApp::new().await;
+    app.add_user("alice").await;
+    let huge = "x".repeat(100 * 1024);
+    let (status, _) = app
+        .call(
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(sign_in("alice", &huge)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn tokens_can_be_refreshed_and_expire() {
+    let app = TestApp::new().await;
+    app.add_user("alice").await;
+    let (status, login) = app
+        .call(
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(sign_in("alice", PASSWORD)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let old = login["token"].as_str().unwrap().to_string();
+    let expires = login["expires_at"].as_i64().unwrap();
+    let refresh_after = login["refresh_after"].as_i64().unwrap();
+    let now = notesync_server::db::now();
+    assert!(
+        (expires - now - 30 * 86_400).abs() < 5,
+        "30 days by default"
+    );
+    assert!(
+        (refresh_after - now - 86_400).abs() < 5,
+        "refresh after a day"
+    );
+
+    let (status, fresh) = app
+        .call("POST", "/api/v1/auth/refresh", Some(&old), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let new = fresh["token"].as_str().unwrap().to_string();
+    assert_ne!(new, old);
+    let (status, _) = app.call("GET", "/api/v1/me", Some(&new), None).await;
+    assert_eq!(status, StatusCode::OK);
+    // The old token works for a few minutes, in case the reply was lost.
+    let (status, _) = app.call("GET", "/api/v1/me", Some(&old), None).await;
+    assert_eq!(status, StatusCode::OK);
+    sqlx::query("UPDATE devices SET prev_expires_at = ?")
+        .bind(now - 1)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let (status, _) = app.call("GET", "/api/v1/me", Some(&old), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // A token that isn't refreshed in time stops working.
+    sqlx::query("UPDATE devices SET expires_at = ?")
+        .bind(now - 1)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let (status, _) = app.call("GET", "/api/v1/me", Some(&new), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(users::list(&app.state.pool).await.unwrap()[0].devices, 0);
+}
+
+#[tokio::test]
+async fn token_lifetime_is_configurable() {
+    let app = TestApp::with_config(|c| c.token_days = 2).await;
+    app.add_user("alice").await;
+    let (_, login) = app
+        .call(
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(sign_in("alice", PASSWORD)),
+        )
+        .await;
+    let now = notesync_server::db::now();
+    assert!((login["expires_at"].as_i64().unwrap() - now - 2 * 86_400).abs() < 5);
+    assert!((login["refresh_after"].as_i64().unwrap() - now - 86_400).abs() < 5);
+
+    let app = TestApp::with_config(|c| c.token_days = 1).await;
+    app.add_user("alice").await;
+    let (_, login) = app
+        .call(
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(sign_in("alice", PASSWORD)),
+        )
+        .await;
+    assert!(
+        (login["refresh_after"].as_i64().unwrap() - now - 43_200).abs() < 5,
+        "halfway through a short lifetime"
+    );
+}
+
+#[tokio::test]
+async fn requests_per_device_are_rate_limited() {
+    let app = TestApp::with_config(|c| {
+        c.request_rate = notesync_server::config::Rate {
+            burst: 5,
+            every: std::time::Duration::from_secs(60),
+        }
+    })
+    .await;
+    let token = app.user("alice").await;
+    for _ in 0..5 {
+        let (status, _) = app.call("GET", "/api/v1/me", Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, body) = app.call("GET", "/api/v1/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    // Other devices have their own allowance.
+    let other = app.login("alice").await;
+    let (status, _) = app.call("GET", "/api/v1/me", Some(&other), None).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -176,10 +370,10 @@ async fn change_password() {
             "PUT",
             "/api/v1/me/password",
             Some(&token),
+            // Other devices are signed out without asking.
             Some(json!({
                 "current_password": PASSWORD,
-                "new_password": "a new password",
-                "sign_out_others": true
+                "new_password": "a new password"
             })),
         )
         .await;
@@ -274,7 +468,19 @@ async fn old_clients_are_refused() {
 
     let req = axum::http::Request::builder()
         .uri("/api/v1/health")
-        .header("x-notesync-client", "0.1.0")
+        .header("x-notesync-client", "0.1.1")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let (status, _) = app.send(req).await;
+    assert_eq!(
+        status,
+        StatusCode::UPGRADE_REQUIRED,
+        "0.1.x doesn't check server paths or refresh tokens"
+    );
+
+    let req = axum::http::Request::builder()
+        .uri("/api/v1/health")
+        .header("x-notesync-client", "0.2.0")
         .body(axum::body::Body::empty())
         .unwrap();
     let (status, _) = app.send(req).await;

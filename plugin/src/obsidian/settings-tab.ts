@@ -70,7 +70,10 @@ export class NotesyncSettingTab extends PluginSettingTab {
     if (this.plugin.signedIn) {
       new Setting(el)
         .setName(`Signed in as ${this.settings.username}`)
-        .setDesc(`This device is called "${this.settings.deviceName}" on the server.`)
+        .setDesc(
+          `This device is called "${this.settings.deviceName}" on the server. ` +
+            signInRenewal(this.settings.tokenExpiresAt),
+        )
         .addButton((button) =>
           button.setButtonText("Sign out").onClick(async () => {
             const ok = await confirm(
@@ -302,6 +305,12 @@ export class NotesyncSettingTab extends PluginSettingTab {
     this.unsubscribe?.();
     this.unsubscribe = this.plugin.onStatusChange((s) => status.setName(statusText(s)));
   }
+}
+
+function signInRenewal(expiresAt: number): string {
+  if (!expiresAt) return "The sign-in renews itself on the next sync.";
+  const date = new Date(expiresAt * 1000).toLocaleDateString();
+  return `The sign-in renews itself as it syncs. If this device doesn't sync before ${date}, you'll need to sign in again.`;
 }
 
 function signInError(err: unknown): string {

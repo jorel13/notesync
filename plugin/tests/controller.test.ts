@@ -51,6 +51,29 @@ describe("SyncController", () => {
     expect(notices).toHaveLength(1);
   });
 
+  it("runs beforeSync first, and reports its failure like a sync failure", async () => {
+    const { controller, sync, notices, statuses } = setup();
+    const order: string[] = [];
+    let fail = false;
+    const deps = (controller as unknown as { deps: SyncControllerDeps }).deps;
+    deps.beforeSync = async () => {
+      order.push("before");
+      if (fail) throw new ServerError(401, "unauthorized", "x");
+    };
+    sync.mockImplementation(async () => {
+      order.push("sync");
+      return emptyReport();
+    });
+    await controller.run("timer");
+    expect(order).toEqual(["before", "sync"]);
+
+    fail = true;
+    await controller.run("timer");
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(statuses.at(-1)?.kind).toBe("error");
+    expect(notices.at(-1)).toMatch(/expired or was revoked/);
+  });
+
   it("goes syncing then idle, and summarizes manual syncs", async () => {
     const report = emptyReport();
     report.downloaded.push("a.md");
@@ -178,6 +201,9 @@ describe("describeError", () => {
     expect(describeError(new ServerError(426, "client_too_old", "x"))).toMatch(/Update the plugin/);
     expect(describeError(new ServerError(404, "not_found", "x"))).toMatch(/Choose a vault/);
     expect(describeError(new ServerError(400, "invalid_path", "Bad path"))).toBe("Bad path");
+    expect(
+      describeError(new ServerError(429, "rate_limited", "Too many requests. Try again in 4 seconds.")),
+    ).toBe("Too many requests. Try again in 4 seconds.");
   });
 
   it("recognizes network failures", () => {

@@ -8,7 +8,7 @@ services:
     # Published by the release workflow. Replace <owner> with the GitHub account
     # that hosts the repository, and pin a version rather than using "latest".
     # To build it yourself instead: docker build -t notesync-server server
-    image: ghcr.io/<owner>/notesync-server:0.1.0
+    image: ghcr.io/<owner>/notesync-server:0.2.0
     user: "${NOTESYNC_UID:-568}:${NOTESYNC_GID:-568}"
     environment:
       - NOTESYNC_MAX_FILE_MB=${NOTESYNC_MAX_FILE_MB:-100}

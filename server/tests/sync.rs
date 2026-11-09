@@ -456,7 +456,7 @@ async fn cleanup_removes_vaults_deleted_long_ago() {
                 "DELETE",
                 &format!("/api/v1/vaults/{id}"),
                 Some(&token),
-                None,
+                Some(json!({ "password": PASSWORD })),
             )
             .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
@@ -505,4 +505,53 @@ async fn concurrent_commits_never_lose_updates() {
         "exactly one edit wins"
     );
     assert_eq!(app.state_of(&token, vault).await["head_seq"], 2);
+}
+
+#[tokio::test]
+async fn syncs_per_device_are_rate_limited() {
+    let app = TestApp::with_config(|c| c.sync_rate.burst = 10).await;
+    let token = app.user("alice").await;
+    let vault = app.create_vault(&token, "Notes").await;
+    let hash = app.upload(&token, vault, b"text").await;
+    // The default allows a burst of 10 sync runs, then one every 5 seconds.
+    for i in 0..10 {
+        let (status, body) = app
+            .commit(
+                &token,
+                vault,
+                json!([{ "path": format!("Note {i}.md"), "op": "upsert", "hash": hash }]),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, body) = app
+        .commit(
+            &token,
+            vault,
+            json!([{ "path": "One too many.md", "op": "upsert", "hash": hash }]),
+        )
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+}
+
+#[tokio::test]
+async fn settings_trash_and_git_folders_are_refused() {
+    let (app, token, vault) = setup().await;
+    let hash = app.upload(&token, vault, b"code").await;
+    for path in [
+        ".obsidian/app.json",
+        ".Obsidian/plugins/notesync/main.js",
+        ".TRASH/old.md",
+        ".git/config",
+    ] {
+        let (status, body) = app
+            .commit(
+                &token,
+                vault,
+                json!([{ "path": path, "op": "upsert", "hash": hash }]),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+        assert_eq!(error_code(&body), "invalid_path");
+    }
 }

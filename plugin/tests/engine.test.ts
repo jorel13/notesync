@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { MassDeleteError, ServerError } from "../src/engine/errors";
+import { sha256Hex } from "../src/engine/hash";
 import type { CommitChange, ServerApi } from "../src/engine/types";
 import { expectSameFiles, makeDevice, syncAll, type Device } from "./support/devices";
 import { MemoryServer } from "./support/memory";
@@ -204,6 +205,64 @@ describe("renames", () => {
     expect(phone.fs.paths()).toEqual(["Note.md"]);
     // The device moves past the change instead of retrying it forever.
     expect(phone.store.saved?.lastSeq).toBe((await server.state()).head_seq);
+  });
+});
+
+describe("paths from the server", () => {
+  /** Puts a file on the server directly, as a compromised server or stolen token could. */
+  async function plant(path: string, text: string): Promise<void> {
+    const data = new TextEncoder().encode(text);
+    const hash = await sha256Hex(data);
+    await server.upload(VAULT, hash, data);
+    await server.commit(VAULT, [{ path, op: "upsert", hash, expect_seq: null }]);
+  }
+
+  it("never writes into the settings, trash or git folders, in any letter case", async () => {
+    phone.fs.caseInsensitive = true;
+    pc.fs.setText("Note.md", "fine");
+    await pc.engine.sync();
+    for (const path of [
+      ".Obsidian/plugins/notesync/main.js",
+      ".obsidian/app.json",
+      ".TRASH/old.md",
+      ".Git/config",
+    ]) {
+      await plant(path, "malicious");
+    }
+    const report = await phone.engine.sync();
+    expect(phone.fs.paths()).toEqual(["Note.md"]);
+    expect(report.downloaded).toEqual(["Note.md"]);
+  });
+
+  it("never writes into a renamed settings folder", async () => {
+    const custom = makeDevice(server, VAULT, "Custom", { configDir: ".config" });
+    await plant(".CONFIG/plugins/x/main.js", "malicious");
+    await plant("Kept.md", "fine");
+    await custom.engine.sync();
+    expect(custom.fs.paths()).toEqual(["Kept.md"]);
+  });
+
+  it("skips and reports paths that break the path rules", async () => {
+    for (const path of ["../outside.md", "a/../../b.md", "/absolute.md", "back\\slash.md"]) {
+      await plant(path, "bad");
+    }
+    await plant("Good.md", "good");
+    const report = await phone.engine.sync();
+    expect(phone.fs.paths()).toEqual(["Good.md"]);
+    expect(report.skipped.map((s) => s.path).sort()).toEqual(
+      ["../outside.md", "/absolute.md", "a/../../b.md", "back\\slash.md"].sort(),
+    );
+    expect(report.skipped[0].reason).toMatch(/server sent a path/);
+    // Skipped paths don't hold the device back.
+    expect(phone.store.saved?.lastSeq).toBe((await server.state()).head_seq);
+  });
+
+  it("applies your own exclusions regardless of letter case", async () => {
+    const excluding = makeDevice(server, VAULT, "Excluding", { excludedPaths: ["Private/"] });
+    await plant("private/secret.md", "secret");
+    await plant("Public.md", "public");
+    await excluding.engine.sync();
+    expect(excluding.fs.paths()).toEqual(["Public.md"]);
   });
 });
 

@@ -66,5 +66,12 @@ pub async fn run(state: &AppState) -> anyhow::Result<GcReport> {
         report.vaults_removed += 1;
     }
 
+    // Old sign-in failures and finished lockouts.
+    sqlx::query("DELETE FROM login_failures WHERE window_start < ? AND locked_until < ?")
+        .bind(now - crate::auth::FAILURE_WINDOW_SECS)
+        .bind(now)
+        .execute(&state.pool)
+        .await?;
+
     Ok(report)
 }

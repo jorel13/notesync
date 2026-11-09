@@ -136,16 +136,17 @@ Every request except login and health checks needs `Authorization: Bearer <token
 | Method and path | Purpose |
 |---|---|
 | `GET /health` | Health check, no login |
-| `POST /auth/login` | `{username, password, device_name}` returns `{token, device_id}` |
+| `POST /auth/login` | `{username, password, device_name}` returns `{token, expires_at, refresh_after, device_id, user}` |
+| `POST /auth/refresh` | Replaces the current token; returns `{token, expires_at, refresh_after}` |
 | `POST /auth/logout` | Revokes the current device token |
 | `GET /me` | Current user |
-| `PUT /me/password` | Change password; optionally sign out other devices |
+| `PUT /me/password` | `{current_password, new_password}`; signs out other devices unless `sign_out_others: false` |
 | `GET /me/devices` | List signed-in devices |
 | `DELETE /me/devices/{id}` | Sign out a device |
 | `GET /vaults` | List your vaults |
 | `POST /vaults` | `{name}` creates a vault |
 | `PATCH /vaults/{id}` | Rename a vault |
-| `DELETE /vaults/{id}` | Delete a vault (kept for the history period, then removed) |
+| `DELETE /vaults/{id}` | `{password}` deletes a vault (restorable for the history period, then removed) |
 | `GET /vaults/{id}/state` | Current files and `head_seq`, used for a first sync |
 | `GET /vaults/{id}/changes?since=N&limit=500` | Changes after `N`, with `{changes, head_seq, more}` |
 | `POST /vaults/{id}/blobs/missing` | `{hashes:[...]}` returns the ones the server doesn't have |
@@ -158,7 +159,7 @@ Admin endpoints for accounts can come later; v1 uses the command line.
 
 **Errors** use one format: `{"error": {"code": "conflict", "message": "..."}}`. Codes include `unauthorized`, `not_found`, `conflict`, `case_conflict`, `invalid_path`, `hash_mismatch`, `too_large`, `rate_limited` and `client_too_old`.
 
-**Version check:** the plugin sends `X-Notesync-Client: <version>`, and the server rejects versions older than it supports with `client_too_old`.
+**Version check:** the plugin sends `X-Notesync-Client: <version>` (from its manifest), and the server rejects versions older than `MIN_CLIENT_VERSION` with `client_too_old`. The minimum is raised only when the protocol changes or an older plugin has a security problem, not on every release, so updating the server doesn't force every phone to update the same day. 0.2.0 is the current minimum.
 
 ### The commit operation
 
@@ -185,13 +186,18 @@ POST /vaults/7/commit
 - Relative paths with `/` separators, Unicode-normalized (NFC), at most 1,024 bytes.
 - Not allowed: `..` segments, leading `/`, control characters, and `< > : " | ? * \`. Segments can't end in a space or dot, since Windows can't store those.
 - A path that matches an existing path apart from letter case is rejected with `case_conflict`.
+- Files in the top-level `.obsidian`, `.trash` and `.git` folders are rejected, in any letter case. Writing into `.obsidian` could install or change plugins on the user's other devices.
 
 ### Security
-- **Passwords:** hashed with Argon2id. Failed logins are rate-limited per username (10 per 15 minutes). There's no per-IP limit: behind Tailscale Serve or a local reverse proxy, every request comes from the same local address.
-- **Tokens:** random 256-bit device tokens, stored only as hashes. They don't expire but can be revoked per device. Disabling a user revokes all their tokens.
-- **Isolation:** every vault query is limited to the signed-in user, with tests for it.
-- **Size limits:** request bodies are capped (file limit plus some headroom).
+- **Passwords:** hashed with Argon2id, with a random salt per password stored inside the hash. Hashing runs off the request threads, at most two at a time, so a burst of sign-ins can't stall syncing or use much memory. An unknown username takes as long to reject as a wrong password.
+- **Lockout:** 10 wrong passwords for a username within 15 minutes locks it for 15 minutes. Failures and lockouts are stored in the database (`login_failures`), so a restart doesn't clear them; `user list` shows them and `user unlock` clears them. Every failure and lockout is logged with the username. Devices already signed in keep working during a lockout.
+- **Rate limits** (in memory, token buckets, all configurable): sign-in attempts per username (10, then one every 5 s), sign-in attempts overall (30, then one per second), sync runs per device (10, then one every 5 s) and all requests per device (600, then 20 per second). There's no per-IP limit: behind Tailscale Serve or a local reverse proxy, every request comes from the same local address.
+- **Tokens:** random 256-bit device tokens, stored only as SHA-256 hashes. Each expires `NOTESYNC_TOKEN_DAYS` (30) after it was issued. The plugin swaps its token for a new one about once a day (`refresh_after`), so a copied token stops working soon after and an idle device is signed out after 30 days. After a swap, the previous token works for 10 more minutes, in case the device never received the reply. Tokens can be revoked per device; disabling a user or resetting their password revokes all of them.
+- **Sensitive actions need the password, not just a token:** changing the password and deleting a vault. A changed password signs out the other devices by default.
+- **Isolation:** every vault query is limited to the signed-in user, with tests for it. File contents are stored per vault, so users never share stored files, even identical ones.
+- **Size limits:** sign-in requests are capped at 16 KB, file uploads at the file limit plus 1 MB, and everything else at 16 MB.
 - **Logs** never include tokens, passwords or note contents.
+- **Not encrypted at rest:** anyone who can read the data folder or its snapshots can read every note. End-to-end encryption is a possible later addition (below).
 
 ### Server modules
 
@@ -285,7 +291,9 @@ flowchart TB
 ### Settings
 - **Server URL**, e.g. `https://notes.<tailnet>.ts.net`.
 - **Sign in:** username and password are sent once to get a device token, and **the password is never saved**.
-- **Token storage:** kept in Obsidian's secret storage (`app.secretStorage`, Obsidian 1.11.4+), never in the plugin's data file.
+- **Token storage:** kept in Obsidian's secret storage (`app.secretStorage`, Obsidian 1.11.4+), never in the plugin's data file. Before a sync, the plugin swaps the token for a new one when `refresh_after` has passed, one swap at a time.
+- **HTTPS only:** the server address must use `https://`; plain `http://` is accepted only for `localhost` and `127.0.0.1`, for testing.
+- **Paths from the server are checked** with the same path rules before anything is written, and the never-synced folders (`.obsidian` or the vault's renamed settings folder, `.trash`, `.git`) are matched regardless of letter case. A compromised server or a stolen token therefore can't write into the settings folder, where plugins live.
 - **Remote vault:** pick an existing vault or create one.
 - **Sync triggers:** on startup (on by default), after edits (wait 10 seconds after the last change), every N minutes (default 5) and manually.
 - **Excluded paths:** `.obsidian/`, `.trash/` and `.git/` are always excluded. Users can add patterns.

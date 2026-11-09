@@ -134,7 +134,12 @@ also a full copy of the notes.
 | One file | `NOTESYNC_MAX_FILE_MB`, 100 MB by default. Larger files are skipped by the plugin and listed in its last-sync report. Uploads that large also need the HTTPS front end to allow them. |
 | Total storage | None built in, and no per-user quota. The dataset's free space is the limit. |
 | Users, vaults, devices | No fixed limit. |
-| Sign-in attempts | 10 failures per username per 15 minutes. |
+| Sign-in attempts | 10 per username, then one every 5 seconds. 10 *wrong* passwords within 15 minutes lock the username for 15 minutes (`user unlock` clears it). |
+| Syncs | 10 per device, then one every 5 seconds. Normal use is far below this. |
+| Other requests | 600 per device, then 20 per second. A large first sync is slowed down, not refused. |
+| Sign-in lifetime | A device that doesn't sync for `NOTESYNC_TOKEN_DAYS` (30) must sign in again. Devices that sync renew it about once a day. |
+
+All of these are environment variables; see the [README](../README.md#configuration).
 
 **Storage use.** Every version of every file stays on the server for `NOTESYNC_HISTORY_DAYS`
 (30 by default) after it's replaced or deleted. A vault that changes a lot can therefore use
@@ -165,8 +170,16 @@ designed for an organization with thousands of users.
 **Things to check now and then**
 - Free space on the dataset, and the size of `blobs/`.
 - That snapshots are being taken.
-- The server logs for repeated errors or failed sign-ins.
-- `notesync-server user list` for accounts that should be disabled.
+- The server logs for repeated errors, `failed sign-in` and `account locked` lines.
+- `notesync-server user list` for lockouts and for accounts that should be disabled.
+
+**If a device is lost or a token may have leaked:** sign that device out from another
+device, or reset the password with `notesync-server user passwd <name>`, which signs out
+every device. An unused token stops working by itself after `NOTESYNC_TOKEN_DAYS`.
+
+**If a vault was deleted by mistake:** `notesync-server vault list --user <name> --deleted`
+shows it and how many days are left, and `notesync-server vault restore --user <name> <id>`
+brings it back.
 
 ## Updating
 
@@ -176,7 +189,15 @@ designed for an organization with thousands of users.
    saving** from the command palette.
 
 The server rejects plugin versions older than it supports, with a message asking you to
-update the plugin.
+update the plugin. The minimum only goes up when the protocol changes or an old plugin has a
+security problem; the changelog says when. **Update the server first, then the plugin on
+each device:** a newer plugin works with the same server version, but an older plugin may be
+refused by a newer server.
+
+**Upgrading to 0.2.0:** 0.2.0 servers refuse 0.1.x plugins (they don't check the paths the
+server sends, and can't renew their sign-in), so update every device's plugin right after
+the server. Devices stay signed in: existing sign-ins get 30 days from the upgrade and then
+renew themselves.
 
 **Check which versions are running**
 - **Plugin:** Settings > notesync > Status shows "Plugin version x.y.z", the build Obsidian

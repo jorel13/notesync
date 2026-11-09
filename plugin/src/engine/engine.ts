@@ -37,6 +37,8 @@ export interface SyncOptions {
   deviceName: string;
   /** Extra paths to leave out: folders end with "/", anything else is an exact file. */
   excludedPaths?: string[];
+  /** Obsidian's settings folder, if renamed from `.obsidian`; never synced. */
+  configDir?: string;
   maxFileBytes?: number;
   /** Extensions merged line by line; everything else gets conflict copies. */
   textExtensions?: string[];
@@ -119,7 +121,11 @@ export class SyncEngine {
     private readonly store: StateStore,
     private readonly options: SyncOptions,
   ) {
-    this.excluded = [...ALWAYS_EXCLUDED, ...(options.excludedPaths ?? [])];
+    this.excluded = [
+      ...ALWAYS_EXCLUDED,
+      ...(options.configDir ? [`${options.configDir.replace(/\/+$/, "")}/`] : []),
+      ...(options.excludedPaths ?? []),
+    ];
     this.maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
     this.textExtensions = new Set(options.textExtensions ?? DEFAULT_TEXT_EXTENSIONS);
     this.massDelete = options.massDelete ?? DEFAULT_MASS_DELETE;
@@ -173,7 +179,7 @@ export class SyncEngine {
     // Phase 1: bring server changes to this device.
     const pulled = await this.pull(state.lastSeq);
     let scan = await this.scan(state, report);
-    const actions = this.plan(state, scan, pulled);
+    const actions = this.plan(state, scan, pulled, report);
     const trashCount = actions.filter((a) => a.kind === "trash").length;
     this.checkMassDelete(trashCount, "local", scan.files.size, run);
     const complete = await this.applyRemote(actions, state, scan, report);
@@ -251,9 +257,16 @@ export class SyncEngine {
 
   // ---- Plan and apply server changes ----
 
-  private plan(state: SyncState, scan: Scan, pulled: Pulled): Action[] {
+  private plan(state: SyncState, scan: Scan, pulled: Pulled, report: SyncReport): Action[] {
     const actions: Action[] = [];
     for (const [path, remote] of pulled.entries) {
+      // Never trust a path from the server: a bad one could write outside the
+      // vault's notes, e.g. into the settings folder where plugins live.
+      const problem = pathProblem(path);
+      if (problem) {
+        addSkip(report, path, `the server sent a path that isn't allowed (${problem})`);
+        continue;
+      }
       if (this.ignored(path, scan)) continue;
       const base = state.files[path];
       // Already known, e.g. this device's own commit coming back.

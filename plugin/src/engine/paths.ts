@@ -42,11 +42,17 @@ export function pathKey(path: string): string {
   return path.toLowerCase();
 }
 
-/** True if `path` is inside one of `prefixes` (folders end with "/") or equals one. */
+/**
+ * True if `path` is inside one of `prefixes` (folders end with "/") or equals
+ * one. Ignores letter case, because Windows and Android do: `.Obsidian/` is
+ * the same folder as `.obsidian/` there.
+ */
 export function isExcluded(path: string, prefixes: string[]): boolean {
-  return prefixes.some((prefix) =>
-    prefix.endsWith("/") ? path.startsWith(prefix) || path === prefix.slice(0, -1) : path === prefix,
-  );
+  const p = pathKey(path);
+  return prefixes.some((raw) => {
+    const prefix = pathKey(raw);
+    return prefix.endsWith("/") ? p.startsWith(prefix) || p === prefix.slice(0, -1) : p === prefix;
+  });
 }
 
 export function extension(path: string): string {

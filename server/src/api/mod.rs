@@ -17,16 +17,26 @@ use tower_http::trace::TraceLayer;
 
 use crate::{error::ApiError, state::AppState};
 
-/// Oldest plugin version this server accepts.
-pub const MIN_CLIENT_VERSION: &str = "0.1.0";
+/// Oldest plugin version this server accepts. Raised only when the protocol
+/// changes or an older plugin has a security problem, not on every release.
+/// 0.2.0: token refresh, and the plugin checks paths sent by the server.
+pub const MIN_CLIENT_VERSION: &str = "0.2.0";
 pub const CLIENT_VERSION_HEADER: &str = "x-notesync-client";
+
+/// Request size limits. Only file uploads may be large.
+const SIGN_IN_BODY_LIMIT: usize = 16 * 1024;
+const DEFAULT_BODY_LIMIT: usize = 16 * 1024 * 1024;
 
 pub fn router(state: AppState) -> Router {
     // Leave room above the file size limit so oversized uploads get a clear error.
-    let body_limit = state.config.max_file_bytes as usize + 1024 * 1024;
+    let upload_limit = state.config.max_file_bytes as usize + 1024 * 1024;
     let api = Router::new()
         .route("/health", get(health))
-        .route("/auth/login", post(account::login))
+        .route(
+            "/auth/login",
+            post(account::login).layer(DefaultBodyLimit::max(SIGN_IN_BODY_LIMIT)),
+        )
+        .route("/auth/refresh", post(account::refresh))
         .route("/auth/logout", post(account::logout))
         .route("/me", get(account::me))
         .route("/me/password", put(account::change_password))
@@ -39,12 +49,14 @@ pub fn router(state: AppState) -> Router {
         .route("/vaults/{id}/blobs/missing", post(files::missing))
         .route(
             "/vaults/{id}/blobs/{hash}",
-            put(files::put_blob).get(files::get_blob),
+            put(files::put_blob)
+                .layer(DefaultBodyLimit::max(upload_limit))
+                .get(files::get_blob),
         )
         .route("/vaults/{id}/commit", post(files::commit))
         .route("/vaults/{id}/history", get(files::history))
         .layer(middleware::from_fn(check_client_version))
-        .layer(DefaultBodyLimit::max(body_limit))
+        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state);
     Router::new()
         .nest("/api/v1", api)

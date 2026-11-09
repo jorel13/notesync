@@ -2,7 +2,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::*;
-use notesync_server::storage::sha256_hex;
+use notesync_server::{storage::sha256_hex, users};
 use serde_json::json;
 
 #[tokio::test]
@@ -71,12 +71,28 @@ async fn create_list_rename_delete() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["name"], "Home");
 
+    // Deleting needs the account password; the device token isn't enough.
+    let delete = format!("/api/v1/vaults/{personal}");
+    let (status, body) = app.call("DELETE", &delete, Some(&token), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let (status, _) = app
         .call(
             "DELETE",
-            &format!("/api/v1/vaults/{personal}"),
+            &delete,
             Some(&token),
-            None,
+            Some(json!({ "password": "wrong password" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, vaults) = app.call("GET", "/api/v1/vaults", Some(&token), None).await;
+    assert_eq!(vaults.as_array().unwrap().len(), 2, "still there");
+
+    let (status, _) = app
+        .call(
+            "DELETE",
+            &delete,
+            Some(&token),
+            Some(json!({ "password": PASSWORD })),
         )
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -97,7 +113,28 @@ async fn create_list_rename_delete() {
     );
 
     // The name can be reused once the old vault is deleted.
-    app.create_vault(&token, "Home").await;
+    let reused = app.create_vault(&token, "Home").await;
+
+    // An admin can restore it, once the name is free again.
+    let pool = &app.state.pool;
+    let deleted = users::vaults(pool, "alice", true).await.unwrap();
+    assert_eq!(deleted.len(), 1);
+    assert!(users::restore_vault(pool, "alice", personal).await.is_err());
+    sqlx::query("UPDATE vaults SET name = 'Home 2' WHERE id = ?")
+        .bind(reused)
+        .execute(pool)
+        .await
+        .unwrap();
+    users::restore_vault(pool, "alice", personal).await.unwrap();
+    let (status, _) = app
+        .call(
+            "GET",
+            &format!("/api/v1/vaults/{personal}/state"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -129,7 +166,11 @@ async fn users_cannot_see_each_others_vaults() {
             Some(json!({ "changes": [{ "path": "x.md", "op": "upsert", "hash": hash }] })),
         ),
         ("PATCH", base.clone(), Some(json!({ "name": "Mine now" }))),
-        ("DELETE", base.clone(), None),
+        (
+            "DELETE",
+            base.clone(),
+            Some(json!({ "password": PASSWORD })),
+        ),
     ];
     for (method, uri, body) in attempts {
         let (status, response) = app.call(method, &uri, Some(&bob), body).await;

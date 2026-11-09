@@ -37,8 +37,16 @@ pub fn normalize(raw: &str) -> Result<VaultPath, String> {
         check_segment(segment)?;
     }
     let key = path.to_lowercase();
+    let top = key.split('/').next().unwrap_or_default();
+    if RESERVED_FOLDERS.contains(&top) {
+        return Err(format!("files in {top:?} are never synced"));
+    }
     Ok(VaultPath { path, key })
 }
+
+/// Top-level folders that are never synced, in any letter case. Writing into
+/// `.obsidian` could install or change plugins on other devices.
+const RESERVED_FOLDERS: &[&str] = &[".obsidian", ".trash", ".git"];
 
 fn check_segment(segment: &str) -> Result<(), String> {
     if segment.is_empty() {
@@ -78,6 +86,8 @@ mod tests {
             "Daily/2026-11-06.md",
             "Attachments/photo 1.png",
             ".hidden/file.md",
+            "Notes/.obsidian/not-top-level.md",
+            ".obsidian-notes/ok.md",
             "Ideas/Café ☕.md",
             "Aux notes.md",
         ] {
@@ -103,6 +113,11 @@ mod tests {
             "CON",
             "con.md",
             "folder/LPT1.txt",
+            ".obsidian/app.json",
+            ".Obsidian/plugins/notesync/main.js",
+            ".OBSIDIAN",
+            ".Trash/old.md",
+            ".git/HEAD",
         ] {
             assert!(normalize(p).is_err(), "{p:?} should be rejected");
         }

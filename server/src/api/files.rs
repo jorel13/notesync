@@ -12,7 +12,7 @@ use super::{
     vaults::owned_vault,
 };
 use crate::{
-    auth::AuthUser,
+    auth::{self, AuthUser},
     db::now,
     error::ApiError,
     state::AppState,
@@ -136,6 +136,11 @@ pub async fn commit(
     ApiJson(req): ApiJson<CommitRequest>,
 ) -> Result<Json<CommitResult>, ApiError> {
     owned_vault(&app.pool, user.user_id, id).await?;
+    // One commit per sync run, so this limits how often a device syncs.
+    app.limits
+        .sync
+        .check(&format!("device:{}", user.device_id))
+        .map_err(auth::too_many)?;
     let _guard = app.write_lock.lock().await;
     Ok(Json(
         sync::commit(&app.pool, id, user.device_id, req.changes).await?,

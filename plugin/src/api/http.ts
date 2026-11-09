@@ -1,3 +1,4 @@
+import manifest from "../../manifest.json";
 import { ServerError } from "../engine/errors";
 import type {
   ChangesPage,
@@ -7,7 +8,8 @@ import type {
   ServerApi,
 } from "../engine/types";
 
-export const CLIENT_VERSION = "0.1.0";
+/** Sent with every request, so the server can refuse versions it no longer supports. */
+export const CLIENT_VERSION: string = manifest.version;
 
 export interface HttpRequest {
   method: string;
@@ -49,16 +51,44 @@ export interface UserInfo {
   is_admin: boolean;
 }
 
-export interface LoginResult {
+/** A device token and when to replace it (Unix seconds). */
+export interface IssuedToken {
   token: string;
+  expires_at: number;
+  refresh_after: number;
+}
+
+export interface LoginResult extends IssuedToken {
   device_id: number;
   user: UserInfo;
 }
 
 const decoder = new TextDecoder();
 
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Why a server address isn't safe to use, or null. Passwords and tokens must
+ * travel over HTTPS; plain HTTP is only allowed to this computer, for testing.
+ */
+export function serverUrlProblem(serverUrl: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(serverUrl.trim());
+  } catch {
+    return "The server address isn't a valid URL, e.g. https://notes.example.ts.net";
+  }
+  if (url.protocol === "https:") return null;
+  if (url.protocol === "http:" && (LOCAL_HOSTS.has(url.hostname) || url.hostname.endsWith(".localhost"))) {
+    return null;
+  }
+  return "The server address must start with https:// (http:// is only allowed for localhost).";
+}
+
 /** `https://notes.example.ts.net/` -> `https://notes.example.ts.net/api/v1` */
 export function apiBase(serverUrl: string): string {
+  const problem = serverUrlProblem(serverUrl);
+  if (problem) throw new ServerError(0, "insecure_url", problem);
   return `${serverUrl.trim().replace(/\/+$/, "")}/api/v1`;
 }
 
@@ -151,6 +181,11 @@ export class HttpServerApi implements ServerApi {
 
   async logout(): Promise<void> {
     await this.raw("POST", "/auth/logout");
+  }
+
+  /** Replaces this device's token; the current one stops working shortly after. */
+  refresh(): Promise<IssuedToken> {
+    return this.json("POST", "/auth/refresh");
   }
 
   listVaults(): Promise<VaultInfo[]> {

@@ -3,7 +3,7 @@
 Self-hosted sync for Obsidian vaults: a small Rust server you run yourself, and an
 Obsidian plugin for desktop and mobile.
 
-> **Status: early development (0.1.1, see the [changelog](CHANGELOG.md)).** The server and plugin are complete for v1 and
+> **Status: early development (0.2.0, see the [changelog](CHANGELOG.md)).** The server and plugin are complete for v1 and
 > covered by automated tests, but haven't had much real-world use yet. Keep a backup of
 > your vault.
 
@@ -47,8 +47,10 @@ Check it's up at `http://127.0.0.1:8080/api/v1/health`.
 | `notesync-server user passwd <name>` | Set a new password and sign the user out everywhere |
 | `notesync-server user disable <name>` / `enable <name>` | Block or unblock a user |
 | `notesync-server user make-admin <name>` | Give a user admin rights |
-| `notesync-server user list` | List users |
-| `notesync-server vault list --user <name>` | List a user's vaults |
+| `notesync-server user unlock <name>` | Clear a lockout after too many wrong passwords |
+| `notesync-server user list` | List users, their signed-in devices and any lockout |
+| `notesync-server vault list --user <name> [--deleted]` | List a user's vaults, or the deleted ones that can be restored |
+| `notesync-server vault restore --user <name> <id>` | Restore a deleted vault |
 | `notesync-server gc` | Remove expired file versions and deleted vaults now |
 
 Commands that take a password prompt for it; add `--password-stdin` to read it from
@@ -62,6 +64,10 @@ standard input instead.
 | `NOTESYNC_DATA_DIR` | `./data` | Database and stored files |
 | `NOTESYNC_MAX_FILE_MB` | `100` | Largest file accepted |
 | `NOTESYNC_HISTORY_DAYS` | `30` | How long old versions and deleted vaults are kept |
+| `NOTESYNC_TOKEN_DAYS` | `30` | A device's sign-in expires if it doesn't sync for this long. Devices renew it about once a day. |
+| `NOTESYNC_LOGIN_BURST` / `NOTESYNC_LOGIN_EVERY_SECONDS` | `10` / `5` | Sign-in attempts per username: 10 at once, then one every 5 seconds |
+| `NOTESYNC_SYNC_BURST` / `NOTESYNC_SYNC_EVERY_SECONDS` | `10` / `5` | Sync runs per device, the same way |
+| `NOTESYNC_REQUEST_BURST` / `NOTESYNC_REQUESTS_PER_SECOND` | `600` / `20` | All other requests per device (a sync makes one per file it uploads or downloads) |
 | `NOTESYNC_LOG` | `info` | Log level (`error`, `warn`, `info`, `debug`) |
 
 ### Tests

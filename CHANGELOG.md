@@ -4,6 +4,41 @@ The plugin and server share one version number. Every change to either one gets 
 version, so Settings > notesync > Status (plugin) and `/api/v1/health` (server) show
 whether a fix has reached a device.
 
+## 0.2.0 (2026-11-08)
+
+Security release. **0.2.0 servers refuse 0.1.x plugins**: update the server, then every
+device's plugin. Devices stay signed in.
+
+### Plugin
+- **Security:** paths sent by the server are checked before anything is written, and
+  `.obsidian` (or a renamed settings folder), `.trash` and `.git` are excluded in any letter
+  case. Before, a compromised server or a stolen token could write `.Obsidian/plugins/...` and
+  run code on every device the next time Obsidian started.
+- **Security:** the server address must use `https://`; `http://` only works for
+  `localhost`, for testing.
+- The sign-in renews itself about once a day while syncing, and settings show when it would
+  expire.
+- Your excluded paths now ignore letter case, like Windows and Android do.
+- Reports its real version to the server (it always said 0.1.0 before).
+- Rate-limit messages from the server say how long to wait.
+
+### Server
+- **Sign-ins expire:** device tokens last `NOTESYNC_TOKEN_DAYS` (30), and devices swap them
+  for new ones about once a day (`POST /auth/refresh`).
+- **Lockouts are stored in the database:** 10 wrong passwords in 15 minutes lock the
+  username for 15 minutes, across restarts. `user list` shows lockouts; `user unlock` clears
+  them. Failed sign-ins and lockouts are logged.
+- **Rate limits:** sign-ins per username and sync runs per device (10 at once, then one every
+  5 seconds), sign-ins overall, and all requests per device. All configurable.
+- **Deleting a vault needs the password.** New `vault list --deleted` and `vault restore`
+  commands.
+- Changing the password signs out other devices by default.
+- Password hashing runs off the request threads, two at a time.
+- Request size limits: 16 KB for sign-in, 16 MB for everything except file uploads.
+- Paths in `.obsidian`, `.trash` and `.git` are rejected in any letter case.
+- `last_seen` is written at most once a minute per device.
+- Minimum plugin version is now 0.2.0.
+
 ## 0.1.1 (2026-11-08)
 
 ### Plugin

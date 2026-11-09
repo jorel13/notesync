@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import manifest from "../manifest.json";
+import { apiBase, CLIENT_VERSION, serverUrlProblem } from "../src/api/http";
 import { DEFAULT_SETTINGS, loadSettings, parseExcludedPaths } from "../src/obsidian/settings";
 import { SELF_WRITE_WINDOW_MS, TrackingFs } from "../src/sync/tracking-fs";
 import { MemoryFs } from "./support/memory";
@@ -25,6 +27,28 @@ describe("TrackingFs", () => {
     expect((await fs.list()).map((f) => f.path)).toEqual(["x/y.md"]);
     await fs.trash("x/y.md");
     expect(await fs.stat("x/y.md")).toBeNull();
+  });
+});
+
+describe("server address", () => {
+  it("requires https except on this computer", () => {
+    expect(serverUrlProblem("https://notes.example.ts.net")).toBeNull();
+    expect(serverUrlProblem("http://127.0.0.1:8080")).toBeNull();
+    expect(serverUrlProblem("http://localhost:8080")).toBeNull();
+    expect(serverUrlProblem("http://[::1]:8080")).toBeNull();
+    expect(serverUrlProblem("http://notes.example.ts.net")).toMatch(/https/);
+    expect(serverUrlProblem("http://192.168.1.10:30080")).toMatch(/https/);
+    expect(serverUrlProblem("http://localhost.evil.com")).toMatch(/https/);
+    expect(serverUrlProblem("notes.example.ts.net")).toMatch(/valid URL/);
+  });
+
+  it("refuses to build requests to an insecure address", () => {
+    expect(() => apiBase("http://192.168.1.10")).toThrow(/https/);
+    expect(apiBase("https://notes.example.ts.net/")).toBe("https://notes.example.ts.net/api/v1");
+  });
+
+  it("reports the plugin's real version to the server", () => {
+    expect(CLIENT_VERSION).toBe(manifest.version);
   });
 });
 

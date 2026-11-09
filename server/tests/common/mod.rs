@@ -25,13 +25,19 @@ pub struct TestApp {
 
 impl TestApp {
     pub async fn new() -> Self {
+        Self::with_config(|_| {}).await
+    }
+
+    /// Like `new`, with some settings changed.
+    pub async fn with_config(change: impl FnOnce(&mut Config)) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let config = Config {
-            bind_addr: "127.0.0.1:0".parse().unwrap(),
-            data_dir: dir.path().to_path_buf(),
+        let mut config = Config {
             max_file_bytes: MAX_FILE_BYTES,
-            history_days: 30,
+            ..Config::with_data_dir(dir.path())
         };
+        // Tests commit far faster than a real device syncs.
+        config.sync_rate.burst = 10_000;
+        change(&mut config);
         let state = AppState::new(config).await.unwrap();
         Self {
             router: api::router(state.clone()),

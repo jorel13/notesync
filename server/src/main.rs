@@ -2,7 +2,7 @@ use std::{io::BufRead, time::Duration};
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
-use notesync_server::{api, gc, users, AppState, Config};
+use notesync_server::{api, db, gc, users, AppState, Config};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -58,6 +58,8 @@ enum UserCommand {
     Enable { username: String },
     /// Give a user admin rights.
     MakeAdmin { username: String },
+    /// Clear a sign-in lockout after repeated wrong passwords.
+    Unlock { username: String },
     /// List all users.
     List,
 }
@@ -68,6 +70,16 @@ enum VaultCommand {
     List {
         #[arg(long)]
         user: String,
+        /// Show deleted vaults that can still be restored.
+        #[arg(long)]
+        deleted: bool,
+    },
+    /// Restore a deleted vault (until cleanup removes it after the history period).
+    Restore {
+        #[arg(long)]
+        user: String,
+        /// The vault ID, from `vault list --deleted`.
+        id: i64,
     },
 }
 
@@ -176,16 +188,27 @@ async fn user_command(state: &AppState, command: UserCommand) -> anyhow::Result<
             users::set_admin(pool, &username, true).await?;
             println!("{username} is now an admin.");
         }
+        UserCommand::Unlock { username } => {
+            users::unlock(pool, &username).await?;
+            println!("Cleared the sign-in lockout for {username}.");
+        }
         UserCommand::List => {
-            println!("ID     USERNAME                 ADMIN  DISABLED  DEVICES");
+            println!("ID     USERNAME                 ADMIN  DISABLED  DEVICES  LOCKED");
+            let now = db::now();
             for user in users::list(pool).await? {
+                let locked = if user.locked_until > now {
+                    format!("{} min", (user.locked_until - now + 59) / 60)
+                } else {
+                    "no".to_string()
+                };
                 println!(
-                    "{:<6} {:<24} {:<6} {:<9} {}",
+                    "{:<6} {:<24} {:<6} {:<9} {:<8} {}",
                     user.id,
                     user.username,
                     yes_no(user.is_admin),
                     yes_no(user.disabled),
-                    user.devices
+                    user.devices,
+                    locked
                 );
             }
         }
@@ -195,18 +218,31 @@ async fn user_command(state: &AppState, command: UserCommand) -> anyhow::Result<
 
 async fn vault_command(state: &AppState, command: VaultCommand) -> anyhow::Result<()> {
     match command {
-        VaultCommand::List { user } => {
-            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
-                "SELECT v.id, v.name, v.head_seq FROM vaults v JOIN users u ON u.id = v.owner_id
-                 WHERE u.username = ? AND v.deleted_at IS NULL ORDER BY v.name",
-            )
-            .bind(&user)
-            .fetch_all(&state.pool)
-            .await?;
-            println!("ID     NAME                             CHANGES");
-            for (id, name, head) in rows {
-                println!("{id:<6} {name:<32} {head}");
+        VaultCommand::List { user, deleted } => {
+            let vaults = users::vaults(&state.pool, &user, deleted).await?;
+            if deleted {
+                let days = state.config.history_days as i64;
+                println!("ID     NAME                             CHANGES  REMOVED IN");
+                for v in vaults {
+                    let left = (v.deleted_at.unwrap_or(0) + days * 86_400 - db::now()) / 86_400;
+                    println!(
+                        "{:<6} {:<32} {:<8} {} days",
+                        v.id,
+                        v.name,
+                        v.head_seq,
+                        left.max(0)
+                    );
+                }
+            } else {
+                println!("ID     NAME                             CHANGES");
+                for v in vaults {
+                    println!("{:<6} {:<32} {}", v.id, v.name, v.head_seq);
+                }
             }
+        }
+        VaultCommand::Restore { user, id } => {
+            users::restore_vault(&state.pool, &user, id).await?;
+            println!("Restored vault {id} for {user}.");
         }
     }
     Ok(())

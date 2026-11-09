@@ -17,12 +17,15 @@ import { ServerError } from "../src/engine/errors";
 import type { ServerApi } from "../src/engine/types";
 import { expectSameFiles, makeDevice, syncAll, type Device } from "./support/devices";
 
-const BINARY = fileURLToPath(
-  new URL(
-    `../../server/target/debug/notesync-server${process.platform === "win32" ? ".exe" : ""}`,
-    import.meta.url,
-  ),
-);
+// NOTESYNC_SERVER_BIN picks another build, e.g. while a dev server holds the default one open.
+const BINARY =
+  process.env.NOTESYNC_SERVER_BIN ??
+  fileURLToPath(
+    new URL(
+      `../../server/target/debug/notesync-server${process.platform === "win32" ? ".exe" : ""}`,
+      import.meta.url,
+    ),
+  );
 const PASSWORD = "end-to-end password";
 const available = existsSync(BINARY);
 if (!available && process.env.NOTESYNC_E2E === "1") {
@@ -81,6 +84,9 @@ describe.skipIf(!available)("end to end with the real server", () => {
       NOTESYNC_DATA_DIR: dataDir,
       NOTESYNC_BIND_ADDR: `127.0.0.1:${port}`,
       NOTESYNC_LOG: "warn",
+      // The tests sync far more often than a real device.
+      NOTESYNC_SYNC_BURST: "10000",
+      NOTESYNC_LOGIN_BURST: "100",
     };
     const add = spawnSync(BINARY, ["user", "add", "alice", "--password-stdin"], {
       env,

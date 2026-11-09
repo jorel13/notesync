@@ -1,5 +1,5 @@
 import { Notice, Platform, Plugin, setIcon, TAbstractFile } from "obsidian";
-import { HttpServerApi, login, type VaultInfo } from "./api/http";
+import { HttpServerApi, login, type IssuedToken, type VaultInfo } from "./api/http";
 import { SyncEngine } from "./engine/engine";
 import type { SyncReport } from "./engine/types";
 import { confirm, ReportModal } from "./obsidian/modals";
@@ -39,6 +39,7 @@ export default class NotesyncPlugin extends Plugin {
 
     this.controller = new SyncController({
       engine: () => this.getEngine(),
+      beforeSync: () => this.refreshTokenIfDue(),
       isOwnChange: (path) => this.trackingFs.isOwnChange(path),
       confirmMassDelete: (err) =>
         confirm(
@@ -149,12 +150,41 @@ export default class NotesyncPlugin extends Plugin {
       this.settings.deviceName,
       obsidianTransport,
     );
+    this.storeToken(result);
+    this.settings.username = result.user.username;
+    await this.saveSettings();
+  }
+
+  private storeToken(issued: IssuedToken): void {
     if (!this.settings.tokenSecretId) {
       this.settings.tokenSecretId = `notesync-token-${randomId()}`;
     }
-    this.app.secretStorage.setSecret(this.settings.tokenSecretId, result.token);
-    this.settings.username = result.user.username;
-    await this.saveSettings();
+    this.app.secretStorage.setSecret(this.settings.tokenSecretId, issued.token);
+    this.settings.tokenRefreshAfter = issued.refresh_after;
+    this.settings.tokenExpiresAt = issued.expires_at;
+  }
+
+  private refreshing: Promise<void> | null = null;
+
+  /**
+   * Swaps the device token for a new one when the server says it's due
+   * (about once a day), so a copied token soon stops working. Only one swap
+   * runs at a time: two at once would leave this device with a replaced token.
+   */
+  refreshTokenIfDue(): Promise<void> {
+    if (Date.now() / 1000 < this.settings.tokenRefreshAfter) return Promise.resolve();
+    this.refreshing ??= (async () => {
+      try {
+        const api = this.api();
+        if (!api) return;
+        this.storeToken(await api.refresh());
+        await this.saveData(this.settings);
+        this.engine = null; // rebuilt with the new token
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
   }
 
   async signOut(): Promise<void> {
@@ -166,6 +196,8 @@ export default class NotesyncPlugin extends Plugin {
     }
     // Secret storage has no delete call, so the token is blanked instead.
     if (this.settings.tokenSecretId) this.app.secretStorage.setSecret(this.settings.tokenSecretId, "");
+    this.settings.tokenRefreshAfter = 0;
+    this.settings.tokenExpiresAt = 0;
     await this.saveSettings();
     this.showStatus({ kind: "not-configured" });
   }
@@ -205,6 +237,7 @@ export default class NotesyncPlugin extends Plugin {
         vaultId: s.vaultId,
         deviceName: s.deviceName,
         excludedPaths: parseExcludedPaths(s.excludedPaths),
+        configDir: this.app.vault.configDir,
         maxFileBytes: Math.max(1, s.maxFileMb) * 1024 * 1024,
       },
     );

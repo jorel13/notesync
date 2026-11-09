@@ -38,8 +38,8 @@ pub enum ApiError {
     MissingBlob(String),
     #[error("a vault with this name already exists")]
     NameTaken,
-    #[error("too many attempts, try again later")]
-    RateLimited,
+    #[error("{0}")]
+    RateLimited(String),
     #[error("client version is too old; the minimum is {0}")]
     ClientTooOld(String),
     #[error("internal error")]
@@ -57,7 +57,7 @@ impl ApiError {
             | Self::HashMismatch
             | Self::MissingBlob(_) => StatusCode::BAD_REQUEST,
             Self::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::ClientTooOld(_) => StatusCode::UPGRADE_REQUIRED,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -75,7 +75,7 @@ impl ApiError {
             Self::TooLarge => "too_large",
             Self::MissingBlob(_) => "missing_blob",
             Self::NameTaken => "name_taken",
-            Self::RateLimited => "rate_limited",
+            Self::RateLimited(_) => "rate_limited",
             Self::ClientTooOld(_) => "client_too_old",
             Self::Internal(_) => "internal",
         }
@@ -96,6 +96,9 @@ impl From<std::io::Error> for ApiError {
 
 impl From<JsonRejection> for ApiError {
     fn from(err: JsonRejection) -> Self {
+        if err.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            return Self::TooLarge;
+        }
         Self::InvalidRequest(err.body_text())
     }
 }

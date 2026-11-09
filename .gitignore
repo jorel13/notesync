@@ -1,5 +1,7 @@
 # Server
 server/target/
+# A second build folder, for testing while a dev server holds target/ open.
+server/target-check/
 server/data/
 *.db
 *.db-shm

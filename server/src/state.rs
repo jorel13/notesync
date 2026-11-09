@@ -1,10 +1,13 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use anyhow::Context;
 use sqlx::SqlitePool;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
-use crate::{auth::RateLimiter, config::Config, db, storage::BlobStore};
+use crate::{auth::Limits, config::Config, db, storage::BlobStore};
+
+/// Password checks allowed at the same time. Each uses about 19 MB.
+const HASH_SLOTS: usize = 2;
 
 /// Shared state for request handlers and maintenance tasks.
 #[derive(Clone)]
@@ -15,7 +18,8 @@ pub struct AppState {
     /// Serializes commits, upload bookkeeping and cleanup, so cleanup never
     /// removes content that a commit is about to reference.
     pub write_lock: Arc<Mutex<()>>,
-    pub login_limiter: Arc<RateLimiter>,
+    pub limits: Arc<Limits>,
+    pub hash_slots: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -27,9 +31,10 @@ impl AppState {
         Ok(Self {
             pool,
             blobs: BlobStore::new(config.blob_dir()),
+            limits: Arc::new(Limits::new(&config)),
             config: Arc::new(config),
             write_lock: Arc::new(Mutex::new(())),
-            login_limiter: Arc::new(RateLimiter::new(10, Duration::from_secs(15 * 60))),
+            hash_slots: Arc::new(Semaphore::new(HASH_SLOTS)),
         })
     }
 }

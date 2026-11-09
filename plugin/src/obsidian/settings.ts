@@ -6,6 +6,10 @@ export interface NotesyncSettings {
   deviceName: string;
   /** ID of the device token in Obsidian's secret storage ("" when signed out). */
   tokenSecretId: string;
+  /** When the server wants a new token (Unix seconds); 0 means as soon as possible. */
+  tokenRefreshAfter: number;
+  /** When the current token stops working (Unix seconds); 0 if unknown. */
+  tokenExpiresAt: number;
   vaultId: number | null;
   vaultName: string;
   syncOnStartup: boolean;
@@ -23,6 +27,8 @@ export const DEFAULT_SETTINGS: NotesyncSettings = {
   username: "",
   deviceName: "",
   tokenSecretId: "",
+  tokenRefreshAfter: 0,
+  tokenExpiresAt: 0,
   vaultId: null,
   vaultName: "",
   syncOnStartup: true,

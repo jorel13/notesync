@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 use crate::{auth, db::now};
 
 pub const MIN_PASSWORD_CHARS: usize = 8;
-const MAX_PASSWORD_CHARS: usize = 1024;
+pub const MAX_PASSWORD_CHARS: usize = 1024;
 
 pub fn validate_username(username: &str) -> Result<(), String> {
     if username.is_empty() || username.len() > 64 {
@@ -123,17 +123,78 @@ pub struct UserSummary {
     pub is_admin: i64,
     pub disabled: i64,
     pub created_at: i64,
+    /// Devices with a token that still works.
     pub devices: i64,
+    /// Unix seconds until which sign-in is locked, or 0.
+    pub locked_until: i64,
 }
 
 pub async fn list(pool: &SqlitePool) -> anyhow::Result<Vec<UserSummary>> {
     Ok(sqlx::query_as(
         "SELECT u.id, u.username, u.is_admin, u.disabled, u.created_at,
-                (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id AND d.revoked = 0) AS devices
+                (SELECT COUNT(*) FROM devices d
+                 WHERE d.user_id = u.id AND d.revoked = 0 AND d.expires_at > ?1) AS devices,
+                COALESCE((SELECT f.locked_until FROM login_failures f
+                          WHERE f.username_key = lower(u.username) AND f.locked_until > ?1), 0)
+                    AS locked_until
          FROM users u ORDER BY u.username",
     )
+    .bind(now())
     .fetch_all(pool)
     .await?)
+}
+
+/// Clears a sign-in lockout and the failure count.
+pub async fn unlock(pool: &SqlitePool, username: &str) -> anyhow::Result<()> {
+    user_id(pool, username).await?;
+    auth::clear_failures(pool, &auth::limit_key(username)).await?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct VaultSummary {
+    pub id: i64,
+    pub name: String,
+    pub head_seq: i64,
+    pub deleted_at: Option<i64>,
+}
+
+/// A user's vaults; with `deleted`, the deleted ones that can still be restored.
+pub async fn vaults(
+    pool: &SqlitePool,
+    username: &str,
+    deleted: bool,
+) -> anyhow::Result<Vec<VaultSummary>> {
+    let id = user_id(pool, username).await?;
+    Ok(sqlx::query_as(
+        "SELECT id, name, head_seq, deleted_at FROM vaults
+         WHERE owner_id = ? AND (deleted_at IS NOT NULL) = ? ORDER BY name",
+    )
+    .bind(id)
+    .bind(deleted)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Undoes a vault delete, if cleanup hasn't removed it yet.
+pub async fn restore_vault(pool: &SqlitePool, username: &str, vault_id: i64) -> anyhow::Result<()> {
+    let id = user_id(pool, username).await?;
+    let result = sqlx::query(
+        "UPDATE vaults SET deleted_at = NULL
+         WHERE id = ? AND owner_id = ? AND deleted_at IS NOT NULL",
+    )
+    .bind(vault_id)
+    .bind(id)
+    .execute(pool)
+    .await;
+    match result {
+        Ok(done) if done.rows_affected() == 1 => Ok(()),
+        Ok(_) => bail!("{username} has no deleted vault with ID {vault_id}"),
+        Err(e) if crate::db::is_unique_violation(&e) => {
+            bail!("{username} already has a vault with that name; rename it first")
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(test)]
