@@ -7,7 +7,7 @@ Syncs an Obsidian vault with a notesync server, on desktop and mobile. See
 
 - **Settings > notesync:** server URL, sign in, choose or create a server vault, and when to
   sync. The password is only used to sign in; the device token is kept in Obsidian's secret
-  storage (Obsidian 1.11.4 or newer).
+  storage (Obsidian 1.12.3 or newer).
 - **Syncs automatically** when Obsidian starts, a few seconds after you stop editing, every
   few minutes, and when you come back to the app on mobile. All of these can be changed.
 - **Sync now:** the ribbon icon, the status bar item on desktop, or the "Sync now" command.

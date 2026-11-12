@@ -263,7 +263,7 @@ export class NotesyncSettingTab extends PluginSettingTab {
     this.numberSetting(
       el,
       "Largest file (MB)",
-      "Larger files are skipped. The server has its own limit too.",
+      "Larger files aren't uploaded or downloaded on this device. Large downloads are fetched a piece at a time, but uploading a file reads all of it into memory, so a phone may need a lower limit. The server has its own limit too.",
       "maxFileMb",
       1,
     );

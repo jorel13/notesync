@@ -554,7 +554,7 @@ $("run-gc").addEventListener("click", async (event) => {
   });
   button.disabled = false;
   if (ok) {
-    notice(`Cleanup removed ${report.blobs_removed} old file versions and ${report.vaults_removed} deleted vaults.`);
+    notice(`Cleanup removed ${report.blobs_removed} old file versions, ${report.vaults_removed} deleted vaults and ${report.uploads_removed} unfinished uploads.`);
     loadServer();
   }
 });

@@ -154,7 +154,7 @@ them with `npm run build` in `plugin/`), and copy them into
 `Documents/<vault name>`. Use a file manager or a USB cable, and show hidden folders to see
 `.obsidian`. Then restart Obsidian and turn the plugin on in Settings > Community plugins.
 
-The plugin needs Obsidian 1.11.4 or newer.
+The plugin needs Obsidian 1.12.3 or newer.
 
 ## 6. Connect each device
 

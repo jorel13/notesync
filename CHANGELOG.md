@@ -4,6 +4,37 @@ The plugin and server share one version number. Every change to either one gets 
 version, so Settings > notesync > Status (plugin) and `/api/v1/health` (server) show
 whether a fix has reached a device.
 
+## 0.5.0 (2026-11-11)
+
+Large files no longer make Obsidian close on Android, and an interrupted sync continues
+where it stopped.
+
+### Plugin
+- **Large files go a piece at a time.** Files over 4 MB are downloaded in 4 MB pieces into
+  a staging folder inside the plugin's folder, checked, then moved into the vault, so a
+  phone never holds a large download in memory. If the app is closed mid-download, the next
+  sync continues from the last piece. Uploads are sent in pieces too and also resume, though
+  Obsidian still has to read the whole file into memory once to upload it.
+- **Needs Obsidian 1.12.3 or newer** (for `appendBinary`).
+- **"Largest file" now applies to downloads too.** Server files over this device's limit are
+  skipped and listed as skipped. A skipped file downloads if the limit is raised later, and
+  the local file at that path is never pushed over it.
+- **An interrupted sync resumes.** Progress is saved every couple of seconds while server
+  changes are applied, so a sync cut short doesn't start over.
+- When both devices changed a large file, this device's version is renamed to the conflict
+  copy instead of being rewritten, and the server version is put in its place.
+- Large files are copied in memory less often.
+
+### Server
+- **Downloads in pieces:** blob downloads accept a `Range` header (`bytes=START-END` or
+  `bytes=START-`) and answer 206 with that piece, at most 16 MB.
+- **Uploads in pieces:** `GET` and `PUT /api/v1/vaults/{id}/blobs/{hash}/parts`. Pieces are
+  appended in order, and when the last one arrives the server checks the hash and stores the
+  file. A piece out of order gets 409 `wrong_offset` with the number of bytes received.
+- **Cleanup** also removes uploads with no new piece for a day (`uploads_removed` in the
+  report).
+- The single-request upload still works, so 0.4 plugins keep working.
+
 ## 0.4.0 (2026-11-09)
 
 ### Server

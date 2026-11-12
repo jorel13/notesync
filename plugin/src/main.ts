@@ -35,7 +35,7 @@ export default class NotesyncPlugin extends Plugin {
 
     const pluginDir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
     this.stateStore = new FileStateStore(this.app.vault.adapter, pluginDir);
-    this.trackingFs = new TrackingFs(new ObsidianVaultFs(this.app.vault));
+    this.trackingFs = new TrackingFs(new ObsidianVaultFs(this.app.vault, `${pluginDir}/staging`));
 
     this.controller = new SyncController({
       engine: () => this.getEngine(),

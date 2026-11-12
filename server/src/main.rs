@@ -109,8 +109,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Gc => {
             let report = gc::run(&state).await?;
             println!(
-                "Removed {} stored file versions and {} deleted vaults.",
-                report.blobs_removed, report.vaults_removed
+                "Removed {} stored file versions, {} deleted vaults and {} unfinished uploads.",
+                report.blobs_removed, report.vaults_removed, report.uploads_removed
             );
             Ok(())
         }

@@ -8,7 +8,12 @@ use crate::{db::now, state::AppState};
 pub struct GcReport {
     pub blobs_removed: u64,
     pub vaults_removed: u64,
+    /// Uploads sent in pieces that were never finished.
+    pub uploads_removed: u64,
 }
+
+/// An upload sent in pieces is dropped if no piece arrives for this long.
+pub const STALE_UPLOAD: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// Removes contents that no current file uses and that were replaced (or
 /// uploaded but never committed) more than `history_days` ago, and removes
@@ -79,6 +84,10 @@ pub async fn run(state: &AppState) -> anyhow::Result<GcReport> {
         .bind(now - crate::api::admin::IDLE_SECS)
         .execute(&state.pool)
         .await?;
+
+    // Unfinished uploads. Holding the upload lock means none is mid-piece.
+    let _uploads = state.upload_lock.lock().await;
+    report.uploads_removed = state.blobs.remove_stale_parts(STALE_UPLOAD).await?;
 
     Ok(report)
 }

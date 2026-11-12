@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MassDeleteError, ServerError } from "../src/engine/errors";
 import { sha256Hex } from "../src/engine/hash";
@@ -300,6 +300,68 @@ describe("what gets synced", () => {
     expect(server.paths()).toEqual(["ok.md"]);
   });
 
+  it("doesn't download server files over this device's limit, or upload over them", async () => {
+    pc.fs.setText("small.md", "short");
+    pc.fs.setText("big.pdf", "far more than ten bytes");
+    pc.fs.setText("later.md", "short");
+    await pc.engine.sync();
+
+    const small = makeDevice(server, VAULT, "Small", { maxFileBytes: 10 });
+    const first = await small.engine.sync();
+    expect(Object.keys(small.fs.snapshot()).sort()).toEqual(["later.md", "small.md"]);
+    expect(first.skipped).toEqual([{ path: "big.pdf", reason: "larger than the 0 MB limit" }]);
+
+    // Later changes too: a file that grows past the limit isn't downloaded,
+    // and a different local file at that path isn't pushed over it.
+    pc.fs.setText("later.md", "now longer than ten bytes");
+    await pc.engine.sync();
+    small.fs.setText("big.pdf", "local");
+    const second = await small.engine.sync();
+    expect(second.downloaded).toEqual([]);
+    expect(second.uploaded).toEqual([]);
+    expect(small.fs.snapshot()["later.md"]).toBe("short");
+    expect(small.fs.snapshot()["big.pdf"]).toBe("local");
+    expect(second.skipped.map((s) => s.path).sort()).toEqual(["big.pdf", "later.md"]);
+    expect(pc.fs.snapshot()["big.pdf"]).toBe("far more than ten bytes");
+
+    // Raising the limit brings them down; the local file at big.pdf is kept as a copy.
+    const raised = makeDevice(server, VAULT, "Small", {}, small);
+    const third = await raised.engine.sync();
+    expect(third.downloaded.sort()).toEqual(["later.md"]);
+    expect(third.conflictCopies).toEqual(["big (conflict 2026-11-06 1432 Small).pdf"]);
+    expect(raised.fs.snapshot()["big.pdf"]).toBe("far more than ten bytes");
+    expect(raised.store.saved?.tooLarge).toBeUndefined();
+  });
+
+  it("saves progress while downloading, so an interrupted first sync resumes", async () => {
+    for (let i = 0; i < 5; i++) pc.fs.setText(`n${i}.md`, `note ${i}`);
+    await pc.engine.sync();
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      let downloads = 0;
+      const flaky: ServerApi = Object.create(server);
+      flaky.download = async (vaultId, hash) => {
+        // Each download "takes" 3 seconds; the third one never finishes.
+        vi.setSystemTime(Date.now() + 3000);
+        if (++downloads === 3) throw new Error("app closed");
+        return server.download(vaultId, hash);
+      };
+      const phoneFlaky = makeDevice(flaky, VAULT, "Phone");
+      await expect(phoneFlaky.engine.sync()).rejects.toThrow("app closed");
+      expect(phoneFlaky.store.saved?.lastSeq).toBe(0);
+      expect(Object.keys(phoneFlaky.store.saved?.files ?? {})).toHaveLength(2);
+
+      // The next run only downloads what's left.
+      const resumed = makeDevice(server, VAULT, "Phone", {}, phoneFlaky);
+      const report = await resumed.engine.sync();
+      expect(report.downloaded).toHaveLength(3);
+      expectSameFiles(pc, resumed);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips a new file whose name differs only by letter case", async () => {
     pc.fs.setText("Note.md", "one");
     await pc.engine.sync();
@@ -355,6 +417,9 @@ function hooked(target: ServerApi, hooks: Partial<Record<keyof ServerApi, () => 
     missing: async (...a) => (await hooks.missing?.(), target.missing(...a)),
     upload: async (...a) => (await hooks.upload?.(), target.upload(...a)),
     download: async (...a) => (await hooks.download?.(), target.download(...a)),
+    downloadRange: async (...a) => (await hooks.downloadRange?.(), target.downloadRange(...a)),
+    uploadProgress: async (...a) => (await hooks.uploadProgress?.(), target.uploadProgress(...a)),
+    uploadPart: async (...a) => (await hooks.uploadPart?.(), target.uploadPart(...a)),
     commit: async (...a: [number, CommitChange[]]) => (await hooks.commit?.(), target.commit(...a)),
   };
 }

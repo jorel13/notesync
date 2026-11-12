@@ -37,6 +37,9 @@ pub enum ApiError {
     HashMismatch,
     #[error("file exceeds the size limit")]
     TooLarge,
+    /// A piece of an upload didn't start where the received bytes end.
+    #[error("the upload has {0} bytes so far; send the piece that starts there")]
+    WrongOffset(u64),
     #[error("content {0} has not been uploaded")]
     MissingBlob(String),
     #[error("a vault with this name already exists")]
@@ -55,7 +58,9 @@ impl ApiError {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::Conflict(_) | Self::CaseConflict(_) | Self::NameTaken => StatusCode::CONFLICT,
+            Self::Conflict(_) | Self::CaseConflict(_) | Self::NameTaken | Self::WrongOffset(_) => {
+                StatusCode::CONFLICT
+            }
             Self::InvalidPath(_)
             | Self::InvalidRequest(_)
             | Self::HashMismatch
@@ -78,6 +83,7 @@ impl ApiError {
             Self::InvalidRequest(_) => "invalid_request",
             Self::HashMismatch => "hash_mismatch",
             Self::TooLarge => "too_large",
+            Self::WrongOffset(_) => "wrong_offset",
             Self::MissingBlob(_) => "missing_blob",
             Self::NameTaken => "name_taken",
             Self::RateLimited(_) => "rate_limited",
@@ -128,6 +134,9 @@ impl IntoResponse for ApiError {
         let mut body = json!({ "code": self.code(), "message": self.to_string() });
         if let Self::Conflict(conflicts) = &self {
             body["conflicts"] = json!(conflicts);
+        }
+        if let Self::WrongOffset(received) = &self {
+            body["received"] = json!(received);
         }
         (self.status(), Json(json!({ "error": body }))).into_response()
     }

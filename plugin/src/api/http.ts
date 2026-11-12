@@ -6,6 +6,7 @@ import type {
   CommitResult,
   RemoteState,
   ServerApi,
+  UploadProgress,
 } from "../engine/types";
 
 /** Sent with every request, so the server can refuse versions it no longer supports. */
@@ -99,7 +100,19 @@ async function send(
   token: string | null,
   body?: unknown,
 ): Promise<Uint8Array> {
-  const headers: Record<string, string> = { "x-notesync-client": CLIENT_VERSION };
+  return (await sendFull(transport, method, url, token, body)).body;
+}
+
+/** Like `send`, but returns the status too. */
+async function sendFull(
+  transport: HttpTransport,
+  method: string,
+  url: string,
+  token: string | null,
+  body?: unknown,
+  extraHeaders: Record<string, string> = {},
+): Promise<HttpResponse> {
+  const headers: Record<string, string> = { "x-notesync-client": CLIENT_VERSION, ...extraHeaders };
   if (token) headers.authorization = `Bearer ${token}`;
   let payload: Uint8Array | string | undefined;
   if (body instanceof Uint8Array) {
@@ -110,7 +123,7 @@ async function send(
     payload = JSON.stringify(body);
   }
   const response = await transport({ method, url, headers, body: payload });
-  if (response.status >= 200 && response.status < 300) return response.body;
+  if (response.status >= 200 && response.status < 300) return response;
   throw toServerError(response);
 }
 
@@ -221,6 +234,48 @@ export class HttpServerApi implements ServerApi {
 
   download(vaultId: number, hash: string): Promise<Uint8Array> {
     return this.raw("GET", `/vaults/${vaultId}/blobs/${hash}`);
+  }
+
+  async downloadRange(
+    vaultId: number,
+    hash: string,
+    offset: number,
+    length: number,
+  ): Promise<{ data: Uint8Array; whole: boolean }> {
+    const response = await sendFull(
+      this.transport,
+      "GET",
+      `${this.base}/vaults/${vaultId}/blobs/${hash}`,
+      this.token,
+      undefined,
+      { range: `bytes=${offset}-${offset + length - 1}` },
+    );
+    // 206 is the requested piece; 200 means the server sent everything.
+    return { data: response.body, whole: response.status !== 206 };
+  }
+
+  async uploadProgress(vaultId: number, hash: string): Promise<UploadProgress | null> {
+    try {
+      return await this.json<UploadProgress>("GET", `/vaults/${vaultId}/blobs/${hash}/parts`);
+    } catch (err) {
+      // A server without this endpoint answers with a bare 404, not a JSON error.
+      if (err instanceof ServerError && err.code === "http_404") return null;
+      throw err;
+    }
+  }
+
+  uploadPart(
+    vaultId: number,
+    hash: string,
+    offset: number,
+    total: number,
+    data: Uint8Array,
+  ): Promise<UploadProgress> {
+    return this.json(
+      "PUT",
+      `/vaults/${vaultId}/blobs/${hash}/parts?offset=${offset}&total=${total}`,
+      data,
+    );
   }
 
   commit(vaultId: number, changes: CommitChange[]): Promise<CommitResult> {

@@ -12,8 +12,10 @@ import type {
   RemoteChange,
   RemoteState,
   ServerApi,
+  StagingFs,
   StateStore,
   SyncState,
+  UploadProgress,
   VaultFs,
 } from "../../src/engine/types";
 
@@ -25,6 +27,39 @@ export class MemoryFs implements VaultFs {
   private clock = 1000;
   readonly trashed: string[] = [];
   readonly renames: { from: string; to: string }[] = [];
+  /** Scratch files, by name. */
+  readonly scratch = new Map<string, Uint8Array>();
+  /** Largest single write or append, to check that big files go in pieces. */
+  largestWrite = 0;
+
+  readonly staging: StagingFs = {
+    size: async (name) => this.scratch.get(name)?.length ?? null,
+    append: async (name, data) => {
+      this.largestWrite = Math.max(this.largestWrite, data.length);
+      const old = this.scratch.get(name) ?? new Uint8Array();
+      const joined = new Uint8Array(old.length + data.length);
+      joined.set(old);
+      joined.set(data, old.length);
+      this.scratch.set(name, joined);
+    },
+    readText: async (name) => {
+      const data = this.scratch.get(name);
+      return data ? decoder.decode(data) : null;
+    },
+    writeText: async (name, text) => {
+      this.scratch.set(name, encoder.encode(text));
+    },
+    remove: async (name) => {
+      this.scratch.delete(name);
+    },
+    list: async () => [...this.scratch.keys()],
+    moveIntoVault: async (name, path) => {
+      const data = this.scratch.get(name);
+      if (!data) throw new Error(`no such scratch file: ${name}`);
+      this.scratch.delete(name);
+      this.files.set(path, { data, mtime: ++this.clock });
+    },
+  };
 
   // Helpers that act like the user editing the vault.
 
@@ -95,6 +130,7 @@ export class MemoryFs implements VaultFs {
   }
 
   async write(path: string, data: Uint8Array): Promise<void> {
+    this.largestWrite = Math.max(this.largestWrite, data.length);
     this.setBytes(path, data);
   }
 
@@ -126,6 +162,12 @@ export class MemoryStateStore implements StateStore {
 /** A single-vault server with the same commit rules as the real one. */
 export class MemoryServer implements ServerApi {
   private readonly blobs = new Map<string, Uint8Array>();
+  /** Unfinished uploads sent in pieces. */
+  private readonly parts = new Map<string, Uint8Array>();
+  /** Acts like a server before 0.5.0: no ranges, no uploads in pieces. */
+  legacy = false;
+  /** Largest single request or response body, to check that big files go in pieces. */
+  largestTransfer = 0;
   private readonly log: RemoteChange[] = [];
   private readonly current = new Map<string, { hash: string; size: number; seq: number }>();
   private head = 0;
@@ -150,13 +192,66 @@ export class MemoryServer implements ServerApi {
     if ((await sha256Hex(data)) !== hash) {
       throw new ServerError(400, "hash_mismatch", "content does not match its hash");
     }
+    this.largestTransfer = Math.max(this.largestTransfer, data.length);
     this.blobs.set(hash, data.slice());
   }
 
   async download(_vaultId: number, hash: string): Promise<Uint8Array> {
     const data = this.blobs.get(hash);
     if (!data) throw new ServerError(404, "not_found", "not found");
+    this.largestTransfer = Math.max(this.largestTransfer, data.length);
     return data.slice();
+  }
+
+  async downloadRange(
+    vaultId: number,
+    hash: string,
+    offset: number,
+    length: number,
+  ): Promise<{ data: Uint8Array; whole: boolean }> {
+    if (this.legacy) return { data: await this.download(vaultId, hash), whole: true };
+    const data = this.blobs.get(hash);
+    if (!data) throw new ServerError(404, "not_found", "not found");
+    if (offset >= data.length) throw new ServerError(416, "http_416", "range not satisfiable");
+    const piece = data.slice(offset, offset + length);
+    this.largestTransfer = Math.max(this.largestTransfer, piece.length);
+    return { data: piece, whole: false };
+  }
+
+  async uploadProgress(_vaultId: number, hash: string): Promise<UploadProgress | null> {
+    if (this.legacy) return null;
+    const stored = this.blobs.get(hash);
+    if (stored) return { received: stored.length, stored: true };
+    return { received: this.parts.get(hash)?.length ?? 0, stored: false };
+  }
+
+  async uploadPart(
+    _vaultId: number,
+    hash: string,
+    offset: number,
+    total: number,
+    data: Uint8Array,
+  ): Promise<UploadProgress> {
+    if (this.legacy) throw new ServerError(404, "http_404", "The server returned HTTP 404.");
+    if (this.blobs.has(hash)) return { received: total, stored: true };
+    this.largestTransfer = Math.max(this.largestTransfer, data.length);
+    const old = this.parts.get(hash) ?? new Uint8Array();
+    if (offset !== old.length) {
+      throw new ServerError(409, "wrong_offset", `the upload has ${old.length} bytes so far`);
+    }
+    const joined = new Uint8Array(old.length + data.length);
+    joined.set(old);
+    joined.set(data, old.length);
+    if (joined.length < total) {
+      this.parts.set(hash, joined);
+      return { received: joined.length, stored: false };
+    }
+    this.parts.delete(hash);
+    if ((await sha256Hex(joined)) !== hash) {
+      throw new ServerError(400, "hash_mismatch", "content does not match its hash");
+    }
+    this.blobs.set(hash, joined);
+    return { received: joined.length, stored: true };
   }
 
   async commit(_vaultId: number, changes: CommitChange[]): Promise<CommitResult> {

@@ -54,6 +54,11 @@ pub fn router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(upload_limit))
                 .get(files::get_blob),
         )
+        // Large files, a piece at a time (each piece within DEFAULT_BODY_LIMIT).
+        .route(
+            "/vaults/{id}/blobs/{hash}/parts",
+            get(files::get_parts).put(files::put_part),
+        )
         .route("/vaults/{id}/commit", post(files::commit))
         .route("/vaults/{id}/history", get(files::history))
         .layer(middleware::from_fn(check_client_version))

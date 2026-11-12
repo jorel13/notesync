@@ -156,8 +156,15 @@ Every request except login and health checks needs `Authorization: Bearer <token
 | `GET /vaults/{id}/state` | Current files and `head_seq`, used for a first sync |
 | `GET /vaults/{id}/changes?since=N&limit=500` | Changes after `N`, with `{changes, head_seq, more}` |
 | `POST /vaults/{id}/blobs/missing` | `{hashes:[...]}` returns the ones the server doesn't have |
-| `PUT /vaults/{id}/blobs/{sha256}` | Upload contents; the server checks the hash and size |
-| `GET /vaults/{id}/blobs/{sha256}` | Download contents |
+| `PUT /vaults/{id}/blobs/{sha256}` | Upload contents in one request; the server checks the hash and size |
+| `GET /vaults/{id}/blobs/{sha256}` | Download contents. With `Range: bytes=START-END` (or `START-`), just that piece (206, at most 16 MB) |
+| `GET /vaults/{id}/blobs/{sha256}/parts` | Where an upload sent in pieces stands: `{received, stored}` |
+| `PUT /vaults/{id}/blobs/{sha256}/parts?offset=N&total=T` | Add the piece starting at byte `N` of a `T`-byte file. Pieces go in order (otherwise 409 `wrong_offset` with `received`); after the last one the server checks the hash and stores the contents. An empty piece at `N = T` finishes an upload that already has every byte |
+
+**Large files.** The plugin sends and fetches files over 4 MB a piece at a time, so a phone never holds a large download in memory and an interrupted transfer resumes where it stopped:
+- **Downloads** go into `<plugin folder>/staging/<sha256>.part` (inside the settings folder, never synced) with `appendBinary`. The SHA-256 is computed as pieces arrive, and its state is saved in `<sha256>.json` after each one, so the download can continue after the app is closed. Once complete and checked, the file is moved into the vault.
+- **Uploads** use the `parts` endpoints, continuing from the server's `received`. Obsidian can only read a whole file, so an upload still holds the file in memory once.
+- Unfinished uploads on the server are removed by cleanup after a day without a new piece. A server before 0.5.0 ignores `Range` (the plugin then takes the whole file) and has no `parts` endpoints (the plugin then uploads in one request).
 | `POST /vaults/{id}/commit` | Apply a batch of changes all at once or not at all (below) |
 | `GET /vaults/{id}/history?path=...` | Past versions of one file |
 
@@ -327,7 +334,7 @@ flowchart TB
 ### Settings
 - **Server URL**, e.g. `https://notes.<tailnet>.ts.net`.
 - **Sign in:** username and password are sent once to get a device token, and **the password is never saved**.
-- **Token storage:** kept in Obsidian's secret storage (`app.secretStorage`, Obsidian 1.11.4+), never in the plugin's data file. Before a sync, the plugin swaps the token for a new one when `refresh_after` has passed, one swap at a time.
+- **Token storage:** kept in Obsidian's secret storage (`app.secretStorage`, Obsidian 1.11.4+; the plugin needs 1.12.3+ for `appendBinary`), never in the plugin's data file. Before a sync, the plugin swaps the token for a new one when `refresh_after` has passed, one swap at a time.
 - **HTTPS only:** the server address must use `https://`; plain `http://` is accepted only for `localhost` and `127.0.0.1`, for testing.
 - **Paths from the server are checked** with the same path rules before anything is written, and the never-synced folders (`.obsidian` or the vault's renamed settings folder, `.trash`, `.git`) are matched regardless of letter case. A compromised server or a stolen token therefore can't write into the settings folder, where plugins live.
 - **Remote vault:** pick an existing vault or create one.

@@ -1,5 +1,6 @@
 import { isRetryable, MassDeleteError, ServerError } from "./errors";
 import { sha256Hex } from "./hash";
+import { Sha256, type Sha256State } from "./sha256";
 import { decodeText, encodeText, mergeText } from "./merge";
 import {
   ALWAYS_EXCLUDED,
@@ -15,6 +16,7 @@ import {
   type ChangesPage,
   type CommitChange,
   type FileStat,
+  type RemoteFile,
   type ServerApi,
   type StateStore,
   type SyncedFile,
@@ -59,6 +61,17 @@ const MAX_ATTEMPTS = 3;
 const PAGE_SIZE = 500;
 const COMMIT_CHUNK = 500;
 const HASH_CHUNK = 1000;
+/** While applying server changes, save progress at least this often, so a
+ * sync cut short (e.g. Android closing the app) doesn't start over. */
+const CHECKPOINT_MS = 2000;
+/**
+ * Files larger than this are downloaded and uploaded a piece at a time, so a
+ * phone never holds a large download in memory and a transfer cut short
+ * resumes where it stopped.
+ */
+export const PIECE_BYTES = 4 * 1024 * 1024;
+/** Times to re-ask the server where an upload stands before giving up. */
+const MAX_OFFSET_RETRIES = 5;
 
 interface LocalFile {
   hash: string;
@@ -75,6 +88,7 @@ interface Scan {
 interface RemoteEntry {
   op: ChangeOp;
   hash: string | null;
+  size: number | null;
   seq: number;
 }
 
@@ -87,7 +101,7 @@ interface Pulled {
 type Action =
   | { kind: "forget"; path: string }
   | { kind: "adopt"; path: string; hash: string; seq: number }
-  | { kind: "download"; path: string; hash: string; seq: number }
+  | { kind: "download"; path: string; hash: string; size: number | null; seq: number }
   | { kind: "trash"; path: string }
   | { kind: "rename"; from: string; to: string; hash: string; seq: number }
   | { kind: "keepLocal"; path: string }
@@ -96,8 +110,15 @@ type Action =
       path: string;
       baseHash: string | null;
       remoteHash: string;
+      remoteSize: number | null;
       seq: number;
     };
+
+/** Progress of a staged download, saved next to it so it can resume. */
+interface StagedNote {
+  received: number;
+  sha: Sha256State;
+}
 
 /**
  * Syncs one local vault with one server vault.
@@ -187,9 +208,17 @@ export class SyncEngine {
     // pulled again next time.
     if (complete) state.lastSeq = Math.max(state.lastSeq, pulled.head);
     await this.store.save(state);
+    // Kept while something is unfinished, so a staged download is reused.
+    if (complete) await this.clearStaging();
 
     // Phase 2: send this device's changes.
     scan = await this.scan(state, report);
+    // Server files over this device's size limit: the local file at that
+    // path (if any) is left alone rather than pushed over them.
+    for (const path of Object.keys(state.tooLarge ?? {})) {
+      scan.files.delete(path);
+      scan.skipped.add(path);
+    }
     await this.push(state, scan, report, run);
   }
 
@@ -202,7 +231,7 @@ export class SyncEngine {
       // First sync: the current state is all that matters, not the history.
       const remote = await this.api.state(vaultId);
       for (const file of remote.files) {
-        entries.set(file.path, { op: "upsert", hash: file.hash, seq: file.seq });
+        entries.set(file.path, { op: "upsert", hash: file.hash, size: file.size, seq: file.seq });
       }
       return { head: remote.head_seq, entries };
     }
@@ -211,7 +240,12 @@ export class SyncEngine {
     do {
       page = await this.api.changes(vaultId, cursor, PAGE_SIZE);
       for (const change of page.changes) {
-        entries.set(change.path, { op: change.op, hash: change.hash, seq: change.seq });
+        entries.set(change.path, {
+          op: change.op,
+          hash: change.hash,
+          size: change.size,
+          seq: change.seq,
+        });
         cursor = change.seq;
       }
     } while (page.more);
@@ -226,11 +260,7 @@ export class SyncEngine {
     for (const stat of await this.fs.list()) {
       const { path } = stat;
       if (isExcluded(path, this.excluded)) continue;
-      const problem =
-        pathProblem(path) ??
-        (stat.size > this.maxFileBytes
-          ? `larger than the ${Math.round(this.maxFileBytes / (1024 * 1024))} MB limit`
-          : null);
+      const problem = pathProblem(path) ?? (stat.size > this.maxFileBytes ? this.sizeProblem() : null);
       if (problem) {
         skipped.add(path);
         addSkip(report, path, problem);
@@ -251,6 +281,10 @@ export class SyncEngine {
     return sha256Hex(await this.fs.read(stat.path));
   }
 
+  private sizeProblem(): string {
+    return `larger than the ${Math.round(this.maxFileBytes / (1024 * 1024))} MB limit`;
+  }
+
   private ignored(path: string, scan: Scan): boolean {
     return isExcluded(path, this.excluded) || scan.skipped.has(path);
   }
@@ -259,7 +293,18 @@ export class SyncEngine {
 
   private plan(state: SyncState, scan: Scan, pulled: Pulled, report: SyncReport): Action[] {
     const actions: Action[] = [];
+    // Files skipped earlier for size are checked again: they may fit now.
+    const tooLarge: Record<string, RemoteFile> = state.tooLarge ?? {};
+    for (const [path, file] of Object.entries(tooLarge)) {
+      if (!pulled.entries.has(path)) {
+        pulled.entries.set(path, { op: "upsert", hash: file.hash, size: file.size, seq: file.seq });
+      }
+    }
     for (const [path, remote] of pulled.entries) {
+      // Kept until the change is applied (see applyRemote), so a failed
+      // download is tried again next time.
+      const earlier = tooLarge[path];
+      delete tooLarge[path];
       // Never trust a path from the server: a bad one could write outside the
       // vault's notes, e.g. into the settings folder where plugins live.
       const problem = pathProblem(path);
@@ -271,6 +316,12 @@ export class SyncEngine {
       const base = state.files[path];
       // Already known, e.g. this device's own commit coming back.
       if (base && base.seq === remote.seq) continue;
+      if (remote.op === "upsert" && remote.size !== null && remote.size > this.maxFileBytes) {
+        tooLarge[path] = { path, hash: remote.hash as string, size: remote.size, seq: remote.seq };
+        addSkip(report, path, this.sizeProblem());
+        continue;
+      }
+      if (earlier) tooLarge[path] = earlier;
 
       const localHash = scan.files.get(path)?.hash ?? null;
       const baseHash = base?.hash ?? null;
@@ -287,18 +338,33 @@ export class SyncEngine {
         actions.push(
           remoteHash === null
             ? { kind: "trash", path }
-            : { kind: "download", path, hash: remoteHash, seq: remote.seq },
+            : { kind: "download", path, hash: remoteHash, size: remote.size, seq: remote.seq },
         );
       } else if (localHash === null) {
         // Deleted here, edited on the server: the edit wins.
-        actions.push({ kind: "download", path, hash: remoteHash as string, seq: remote.seq });
+        actions.push({
+          kind: "download",
+          path,
+          hash: remoteHash as string,
+          size: remote.size,
+          seq: remote.seq,
+        });
       } else if (remoteHash === null) {
         // Edited here, deleted on the server: the edit wins and is uploaded as a new file.
         actions.push({ kind: "keepLocal", path });
       } else {
-        actions.push({ kind: "merge", path, baseHash, remoteHash, seq: remote.seq });
+        actions.push({
+          kind: "merge",
+          path,
+          baseHash,
+          remoteHash,
+          remoteSize: remote.size,
+          seq: remote.seq,
+        });
       }
     }
+    if (Object.keys(tooLarge).length > 0) state.tooLarge = tooLarge;
+    else delete state.tooLarge;
     return this.detectRenames(actions, scan);
   }
 
@@ -336,9 +402,21 @@ export class SyncEngine {
     report: SyncReport,
   ): Promise<boolean> {
     let complete = true;
+    let lastSave = Date.now();
     for (const action of actions) {
-      if (!(await this.applyAction(action, state, scan, report))) complete = false;
+      if (await this.applyAction(action, state, scan, report)) {
+        if (state.tooLarge) delete state.tooLarge["to" in action ? action.to : action.path];
+      } else {
+        complete = false;
+      }
+      // lastSeq isn't moved until the end, so a saved partial state only means
+      // the files done so far are skipped next time.
+      if (Date.now() - lastSave >= CHECKPOINT_MS) {
+        await this.store.save(state);
+        lastSave = Date.now();
+      }
     }
+    if (state.tooLarge && Object.keys(state.tooLarge).length === 0) delete state.tooLarge;
     return complete;
   }
 
@@ -366,9 +444,7 @@ export class SyncEngine {
       }
 
       case "download": {
-        const data = await this.fetchBlob(action.hash);
-        if (!(await this.unchangedSinceScan(action.path, scan))) return false;
-        await this.fs.write(action.path, data);
+        if (!(await this.placeRemote(action.path, action.hash, action.size, scan))) return false;
         await this.record(state, action.path, action.hash, action.seq, action.hash);
         add(report.downloaded, action.path);
         return true;
@@ -407,6 +483,10 @@ export class SyncEngine {
     report: SyncReport,
   ): Promise<boolean> {
     const { path } = action;
+    const localSize = scan.files.get(path)?.size ?? null;
+    if (this.isLarge(action.remoteSize) || this.isLarge(localSize)) {
+      return this.largeConflict(action, state, scan, report);
+    }
     const remoteData = await this.fetchBlob(action.remoteHash);
     if (!(await this.unchangedSinceScan(path, scan))) return false;
     const localData = await this.fs.read(path);
@@ -443,6 +523,135 @@ export class SyncEngine {
     scan.files.set(copy, { hash: "", size: localData.length, mtime: -1 });
     add(report.conflictCopies, copy);
     return true;
+  }
+
+  /**
+   * Both sides changed a large file. It isn't merged line by line or read
+   * into memory: this device's file is renamed to a conflict copy and the
+   * server version is put in its place.
+   */
+  private async largeConflict(
+    action: Extract<Action, { kind: "merge" }>,
+    state: SyncState,
+    scan: Scan,
+    report: SyncReport,
+  ): Promise<boolean> {
+    const { path } = action;
+    const remoteLarge = this.isLarge(action.remoteSize);
+    const remoteData = remoteLarge ? null : await this.fetchBlob(action.remoteHash);
+    if (remoteLarge) await this.stageDownload(action.remoteHash, action.remoteSize as number);
+    if (!(await this.unchangedSinceScan(path, scan))) return false;
+    const copy = conflictCopyPath(
+      path,
+      this.options.deviceName,
+      this.now(),
+      (candidate) => scan.files.has(candidate) || candidate in state.files,
+    );
+    await this.fs.rename(path, copy);
+    if (remoteData) await this.fs.write(path, remoteData);
+    else await this.moveStaged(action.remoteHash, path);
+    await this.record(state, path, action.remoteHash, action.seq, action.remoteHash);
+    scan.files.set(copy, { hash: "", size: scan.files.get(path)?.size ?? 0, mtime: -1 });
+    add(report.conflictCopies, copy);
+    return true;
+  }
+
+  // ---- Large downloads, a piece at a time ----
+
+  private isLarge(size: number | null): boolean {
+    return size !== null && size > PIECE_BYTES;
+  }
+
+  /**
+   * Puts the server's content at `path`, unless the local file changed since
+   * the scan. Large files are built in the staging area first.
+   */
+  private async placeRemote(
+    path: string,
+    hash: string,
+    size: number | null,
+    scan: Scan,
+  ): Promise<boolean> {
+    if (!this.isLarge(size)) {
+      const data = await this.fetchBlob(hash);
+      if (!(await this.unchangedSinceScan(path, scan))) return false;
+      await this.fs.write(path, data);
+      return true;
+    }
+    // Downloaded first, so a file edited meanwhile keeps its staged copy for next time.
+    await this.stageDownload(hash, size as number);
+    if (!(await this.unchangedSinceScan(path, scan))) return false;
+    await this.moveStaged(hash, path);
+    return true;
+  }
+
+  private async moveStaged(hash: string, path: string): Promise<void> {
+    await this.fs.staging.moveIntoVault(`${hash}.part`, path);
+    await this.fs.staging.remove(`${hash}.json`);
+  }
+
+  /**
+   * Downloads content into `<hash>.part` in the staging area, a piece at a
+   * time, checking the hash as it goes. Progress is saved in `<hash>.json`
+   * after each piece, so an interrupted download continues from there.
+   */
+  private async stageDownload(hash: string, size: number): Promise<void> {
+    const staging = this.fs.staging;
+    const part = `${hash}.part`;
+    const note = `${hash}.json`;
+    let hasher = new Sha256();
+    let received = 0;
+
+    const saved = parseNote(await staging.readText(note));
+    const have = await staging.size(part);
+    if (saved && have === saved.received && saved.received <= size) {
+      try {
+        hasher = Sha256.restore(saved.sha);
+        received = saved.received;
+      } catch {
+        hasher = new Sha256();
+      }
+    }
+    if (received === 0 && (have !== null || saved)) {
+      // Out of step, e.g. the app stopped between writing a piece and noting it.
+      await staging.remove(part);
+      await staging.remove(note);
+    }
+
+    while (received < size) {
+      const { data, whole } = await this.api.downloadRange(
+        this.options.vaultId,
+        hash,
+        received,
+        Math.min(PIECE_BYTES, size - received),
+      );
+      if (whole) {
+        // An older server sent the entire file.
+        await staging.remove(part);
+        await staging.append(part, data);
+        hasher = new Sha256().update(data);
+        received = data.length;
+        break;
+      }
+      if (data.length === 0 || received + data.length > size) {
+        throw new Error("The server sent a piece of the wrong size.");
+      }
+      await staging.append(part, data);
+      hasher.update(data);
+      received += data.length;
+      await staging.writeText(note, JSON.stringify({ received, sha: hasher.save() }));
+    }
+
+    if (received !== size || hasher.hex() !== hash) {
+      await staging.remove(part);
+      await staging.remove(note);
+      throw new Error("Downloaded content doesn't match its hash.");
+    }
+  }
+
+  /** Removes staged downloads that are no longer needed. */
+  private async clearStaging(): Promise<void> {
+    for (const name of await this.fs.staging.list()) await this.fs.staging.remove(name);
   }
 
   /** True if the file is still exactly as the scan saw it (or still absent). */
@@ -622,9 +831,48 @@ export class SyncEngine {
       } else {
         missing.delete(hash);
       }
-      await this.api.upload(vaultId, hash, data);
+      await this.uploadBlob(hash, data);
     }
     return unstable;
+  }
+
+  /**
+   * Uploads content, a piece at a time if it's large, continuing from
+   * wherever the server's copy stands.
+   */
+  private async uploadBlob(hash: string, data: Uint8Array): Promise<void> {
+    const { vaultId } = this.options;
+    if (data.length <= PIECE_BYTES) {
+      await this.api.upload(vaultId, hash, data);
+      return;
+    }
+    let progress = await this.api.uploadProgress(vaultId, hash);
+    if (progress === null) {
+      // An older server: one request with the whole file.
+      await this.api.upload(vaultId, hash, data);
+      return;
+    }
+    let retries = 0;
+    while (!progress.stored) {
+      const offset = progress.received;
+      if (offset > data.length) throw new Error("The server has more of this file than exists.");
+      try {
+        progress = await this.api.uploadPart(
+          vaultId,
+          hash,
+          offset,
+          data.length,
+          data.subarray(offset, offset + PIECE_BYTES),
+        );
+      } catch (err) {
+        // Out of step with the server, e.g. a piece arrived but the reply was lost.
+        if (!(err instanceof ServerError && err.code === "wrong_offset")) throw err;
+        if (++retries > MAX_OFFSET_RETRIES) throw err;
+        const now = await this.api.uploadProgress(vaultId, hash);
+        if (now === null) throw err;
+        progress = now;
+      }
+    }
   }
 
   /**
@@ -652,6 +900,16 @@ export class SyncEngine {
       }
       return applied;
     }
+  }
+}
+
+function parseNote(text: string | null): StagedNote | null {
+  if (text === null) return null;
+  try {
+    const note = JSON.parse(text) as StagedNote;
+    return Number.isSafeInteger(note.received) && note.sha ? note : null;
+  } catch {
+    return null;
   }
 }
 

@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { HttpServerApi, login } from "../src/api/http";
+import { PIECE_BYTES } from "../src/engine/engine";
 import { ServerError } from "../src/engine/errors";
 import type { ServerApi } from "../src/engine/types";
 import { expectSameFiles, makeDevice, syncAll, type Device } from "./support/devices";
@@ -138,6 +139,29 @@ describe.skipIf(!available)("end to end with the real server", () => {
     expect(pc.fs.renames).toEqual([{ from: "Draft.md", to: "Final.md" }]);
   });
 
+  it("sends and fetches large files in pieces", async () => {
+    const [pc, phone, pcApi] = await twoDevices();
+    const size = PIECE_BYTES * 2 + 12_345;
+    const video = new Uint8Array(size).map((_, i) => (i * 7 + (i >> 12)) % 256);
+    pc.fs.setBytes("Media/video.mp4", video);
+    await pc.engine.sync();
+
+    // The server has it whole, and hands out pieces on request.
+    const vaultId = (await pcApi.listVaults()).at(-1)!.id;
+    const state = await pcApi.state(vaultId);
+    const hash = state.files[0].hash;
+    expect(await pcApi.uploadProgress(vaultId, hash)).toEqual({ received: size, stored: true });
+    const piece = await pcApi.downloadRange(vaultId, hash, PIECE_BYTES, 10);
+    expect(piece.whole).toBe(false);
+    expect([...piece.data]).toEqual([...video.subarray(PIECE_BYTES, PIECE_BYTES + 10)]);
+
+    await phone.engine.sync();
+    const got = await phone.fs.read("Media/video.mp4");
+    expect(got.length).toBe(size);
+    expect(got.every((v, i) => v === video[i])).toBe(true);
+    expect(phone.fs.largestWrite).toBeLessThanOrEqual(PIECE_BYTES);
+  });
+
   it("merges separate edits and keeps conflict copies for overlapping ones", async () => {
     const [pc, phone] = await twoDevices();
     pc.fs.setText("Merge.md", "a\nb\nc\n");
@@ -197,6 +221,9 @@ describe.skipIf(!available)("end to end with the real server", () => {
         return pcApi.upload(...a);
       },
       download: (...a) => pcApi.download(...a),
+      downloadRange: (...a) => pcApi.downloadRange(...a),
+      uploadProgress: (...a) => pcApi.uploadProgress(...a),
+      uploadPart: (...a) => pcApi.uploadPart(...a),
       commit: (...a) => pcApi.commit(...a),
     };
     const vaultId = (await pcApi.listVaults()).at(-1)!.id;

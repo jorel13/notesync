@@ -18,6 +18,9 @@ pub struct AppState {
     /// Serializes commits, upload bookkeeping and cleanup, so cleanup never
     /// removes content that a commit is about to reference.
     pub write_lock: Arc<Mutex<()>>,
+    /// Serializes uploads sent in pieces, so two requests never append to the
+    /// same unfinished file at once.
+    pub upload_lock: Arc<Mutex<()>>,
     pub limits: Arc<Limits>,
     pub hash_slots: Arc<Semaphore>,
     /// Unix seconds when the server started.
@@ -36,6 +39,7 @@ impl AppState {
             limits: Arc::new(Limits::new(&config)),
             config: Arc::new(config),
             write_lock: Arc::new(Mutex::new(())),
+            upload_lock: Arc::new(Mutex::new(())),
             hash_slots: Arc::new(Semaphore::new(HASH_SLOTS)),
             started_at: db::now(),
         })

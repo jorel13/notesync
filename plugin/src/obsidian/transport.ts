@@ -6,13 +6,7 @@ import type { HttpTransport } from "../api/http";
  * mobile and isn't subject to browser CORS rules.
  */
 export const obsidianTransport: HttpTransport = async (request) => {
-  const body =
-    request.body instanceof Uint8Array
-      ? (request.body.buffer.slice(
-          request.body.byteOffset,
-          request.body.byteOffset + request.body.byteLength,
-        ) as ArrayBuffer)
-      : request.body;
+  const body = request.body instanceof Uint8Array ? toArrayBuffer(request.body) : request.body;
   const response = await requestUrl({
     url: request.url,
     method: request.method,
@@ -23,3 +17,11 @@ export const obsidianTransport: HttpTransport = async (request) => {
   });
   return { status: response.status, body: new Uint8Array(response.arrayBuffer) };
 };
+
+/** The bytes as an ArrayBuffer, copying only if they're part of a larger buffer. */
+export function toArrayBuffer(data: Uint8Array): ArrayBuffer {
+  if (data.byteOffset === 0 && data.byteLength === data.buffer.byteLength) {
+    return data.buffer as ArrayBuffer;
+  }
+  return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+}

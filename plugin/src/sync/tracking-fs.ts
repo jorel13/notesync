@@ -1,4 +1,4 @@
-import type { FileStat, VaultFs } from "../engine/types";
+import type { FileStat, StagingFs, VaultFs } from "../engine/types";
 
 /** How long after the sync touches a file its change events are ignored. */
 export const SELF_WRITE_WINDOW_MS = 5_000;
@@ -9,11 +9,27 @@ export const SELF_WRITE_WINDOW_MS = 5_000;
  */
 export class TrackingFs implements VaultFs {
   private readonly touched = new Map<string, number>();
+  readonly staging: StagingFs;
 
   constructor(
     private readonly inner: VaultFs,
     private readonly now: () => number = Date.now,
-  ) {}
+  ) {
+    const staging = inner.staging;
+    this.staging = {
+      size: (name) => staging.size(name),
+      append: (name, data) => staging.append(name, data),
+      readText: (name) => staging.readText(name),
+      writeText: (name, text) => staging.writeText(name, text),
+      remove: (name) => staging.remove(name),
+      list: () => staging.list(),
+      moveIntoVault: async (name, path) => {
+        this.mark(path);
+        await staging.moveIntoVault(name, path);
+        this.mark(path);
+      },
+    };
+  }
 
   /** True if the sync changed this path in the last few seconds. */
   isOwnChange(path: string): boolean {
